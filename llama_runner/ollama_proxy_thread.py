@@ -109,7 +109,7 @@ async def _dynamic_route_runner_request_generator(request: Request, target_path:
     if port is None:
         # Runner is not running, request startup and wait
         logging.info(f"Runner for {model_name_from_request} not running. Requesting startup.")
-        startup_timeout = 60 # seconds
+        startup_timeout = 240 # seconds
         try:
             # Request startup via the callback, which returns an asyncio.Future
             # Store the future locally in the proxy thread instance

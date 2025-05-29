@@ -12,6 +12,7 @@ import httpx
 # Third-party imports
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute # Import APIRoute for isinstance check
 import uvicorn
 
 from PySide6.QtCore import QThread, Slot # Import QTimer for potential use
@@ -96,10 +97,16 @@ async def _dynamic_route_v1_request_generator(
     runtimes_config = request.app.state.runtimes_config # Use runtimes_config
     get_runner_port_callback = request.app.state.get_runner_port_callback
     request_runner_start_callback = request.app.state.request_runner_start_callback
-    prompt_logging_enabled = request.app.state.prompt_logging_enabled # Access prompt logging flag
-    prompts_logger = request.app.state.prompts_logger # Access prompts logger instance
+    prompt_logging_enabled = getattr(request.app.state, 'prompt_logging_enabled', False) # Safer access
+    prompts_logger = getattr(request.app.state, 'prompts_logger', logging.getLogger()) # Safer access
     # Access the proxy thread instance to get the futures dictionary
-    proxy_thread: FastAPIProxyThread = request.app.state.proxy_thread_instance # We'll set this in run_async
+    proxy_thread_instance = getattr(request.app.state, 'proxy_thread_instance', None)
+    if not isinstance(proxy_thread_instance, FastAPIProxyThread):
+        logging.error("proxy_thread_instance not found or not of type FastAPIProxyThread in app.state")
+        yield f'data: {{"error": "Internal server error: Proxy thread not configured."}}\n\n'.encode('utf-8')
+        return
+    proxy_thread: FastAPIProxyThread = proxy_thread_instance
+
 
     # Extract the model name from the request body
     try:
@@ -111,10 +118,15 @@ async def _dynamic_route_v1_request_generator(
                 try:
                     body = json.loads(body_bytes)
                 except json.JSONDecodeError:
+                    body = None # Ensure body is None if JSON decoding fails
                     logging.warning(f"Could not decode request body as JSON for {request.url.path}")
                     yield b'data: {"error": "Invalid JSON request body."}\n\n'
                     return # Stop the generator
-        model_name_from_request = body.get("model") # This is the ID used by LM Studio (e.g., "vendor/model-name-gguf")
+        
+        model_name_from_request = None
+        if isinstance(body, dict): # Check if body is a dict before calling .get()
+            model_name_from_request = body.get("model") # This is the ID used by LM Studio (e.g., "vendor/model-name-gguf")
+        
         if not model_name_from_request:
             logging.warning(f"Model name not found in request body for {request.url.path}")
             yield b'data: {"error": "Model name not specified in request body."}\n\n'
@@ -204,6 +216,7 @@ async def _dynamic_route_v1_request_generator(
     if port is None:
         # Runner is not running, request startup and wait
         logging.info(f"Runner for {model_name} not running. Requesting startup.")
+        startup_timeout = 240 # Define startup_timeout before the try block
         try:
             # Request startup via the callback, which returns an asyncio.Future
             # Store the future locally in the proxy thread instance
@@ -215,7 +228,6 @@ async def _dynamic_route_v1_request_generator(
 
             # Wait for the runner to become ready (Future to resolve)
             # Use a timeout to prevent infinite waiting
-            startup_timeout = 60 # seconds
             port = await asyncio.wait_for(
                 proxy_thread._runner_ready_futures[model_name],
                 timeout=startup_timeout
@@ -495,7 +507,11 @@ async def _list_openai_models_handler(request: Request):
 dynamic_v1_paths = ["/v1/chat/completions", "/v1/completions", "/v1/embeddings"]
 # Check if the *handler function itself* is already associated with the path
 # This is a more robust check than just checking the path string
-current_v1_handlers = {route.path: route.endpoint for route in app.routes if route.path in dynamic_v1_paths}
+# Use isinstance and APIRoute for Pylance
+current_v1_handlers = {}
+for route in app.routes:
+    if isinstance(route, APIRoute) and route.path in dynamic_v1_paths:
+        current_v1_handlers[route.path] = route.endpoint
 
 # Add routes using the @app.post decorator
 @app.post("/v1/chat/completions")
@@ -568,7 +584,7 @@ class FastAPIProxyThread(QThread): # Renamed class
                  request_runner_start_callback: Callable[[str], asyncio.Future], # Callback now returns Future
                  prompt_logging_enabled: bool, # Add prompt logging flag
                  prompts_logger: logging.Logger, # Add prompts logger instance
-                 api_key: str = None):
+                 api_key: Optional[str] = None): # Changed to Optional[str]
         super().__init__()
         self.all_models_config = all_models_config # Store all_models_config
         self.runtimes_config = runtimes_config # Store runtimes_config

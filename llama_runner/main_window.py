@@ -16,32 +16,42 @@ from llama_runner.ollama_proxy_thread import OllamaProxyThread
 from llama_runner import gguf_metadata
 
 from llama_runner.model_status_widget import ModelStatusWidget
-from llama_runner.llama_runner_manager import LlamaRunnerManager
+from llama_runner.llama_runner_manager import LlamaRunnerManager, RunnerErrorEvent, RunnerStoppedEvent # Import events if MainWindow were to handle them directly
 
 
 class MainWindow(QWidget):
-    # Signal emitted when a runner's port is ready
-    # This signal is emitted by MainWindow, connected to the proxy thread
-    runner_port_ready_for_proxy = Signal(str, int)
-    # Signal emitted when a runner stops
-    # This signal is emitted by MainWindow, connected to the proxy thread
-    runner_stopped_for_proxy = Signal(str)
+    # runner_port_ready_for_proxy and runner_stopped_for_proxy are now defined in LlamaRunnerManager
+    # # Signal emitted when a runner's port is ready
+    # # This signal is emitted by MainWindow, connected to the proxy thread
+    # runner_port_ready_for_proxy = Signal(str, int)
+    # # Signal emitted when a runner stops
+    # # This signal is emitted by MainWindow, connected to the proxy thread
+    # runner_stopped_for_proxy = Signal(str)
 
-    def __init__(self, prompt_logging_enabled: bool = False):
+    def __init__(self):
         super().__init__()
 
         self.setWindowTitle("Llama Runner")
-        self.prompt_logging_enabled = prompt_logging_enabled
         self.resize(800, 600)
 
         self.config = load_config()
+        
+        # Load settings from config with defaults
+        self.prompt_logging_enabled = self.config.get('logging', {}).get('prompt_logging_enabled', False)
         self.llama_runtimes = self.config.get("llama-runtimes", {})
-        self.default_runtime = "llama-server"
+        self.default_runtime = self.config.get("default_runtime", "llama-server")
         self.models = self.config.get("models", {})
         self.concurrent_runners_limit = self.config.get("concurrentRunners", 1)
         if not isinstance(self.concurrent_runners_limit, int) or self.concurrent_runners_limit < 1:
             logging.warning(f"Invalid 'concurrentRunners' value in config: {self.concurrent_runners_limit}. Defaulting to 1.")
             self.concurrent_runners_limit = 1
+
+        # Proxy settings
+        proxies_config = self.config.get('proxies', {})
+        self.ollama_proxy_enabled = proxies_config.get('ollama', {}).get('enabled', True)
+        lmstudio_proxy_config = proxies_config.get('lmstudio', {})
+        self.lmstudio_proxy_enabled = lmstudio_proxy_config.get('enabled', True)
+        self.lmstudio_api_key = lmstudio_proxy_config.get('api_key', None)
 
         self.prompts_logger = logging.getLogger("prompts")
 
@@ -59,7 +69,7 @@ class MainWindow(QWidget):
         self.fastapi_proxy_thread: Optional[FastAPIProxyThread] = None
         self.ollama_proxy_thread: Optional[OllamaProxyThread] = None
 
-        self.layout = QVBoxLayout()
+        self.main_layout = QVBoxLayout() # Renamed self.layout to self.main_layout
         self.top_layout = QHBoxLayout()
 
         self.model_list_widget = QListWidget()
@@ -90,10 +100,11 @@ class MainWindow(QWidget):
                 show-decoration-selected: false;
             }
         """)
-        self.top_layout.addWidget(self.model_list_widget)
+        self.main_layout.addLayout(self.top_layout) # Use main_layout
 
         self.model_status_stack = QStackedWidget()
-        self.top_layout.addWidget(self.model_status_stack)
+        self.top_layout.addWidget(self.model_list_widget) # model_list_widget is part of top_layout
+        self.top_layout.addWidget(self.model_status_stack) # model_status_stack is part of top_layout
 
         self.model_status_widgets: Dict[str, ModelStatusWidget] = {}
 
@@ -111,16 +122,16 @@ class MainWindow(QWidget):
         self.no_model_selected_widget = QWidget()
         no_model_layout = QVBoxLayout(self.no_model_selected_widget)
         no_model_label = QLabel("Select a model from the list.")
-        no_model_label.setAlignment(Qt.AlignCenter)
+        no_model_label.setAlignment(Qt.AlignmentFlag.AlignCenter) # Corrected Qt.AlignCenter
         no_model_layout.addWidget(no_model_label)
         no_model_layout.addStretch()
         self.model_status_stack.addWidget(self.no_model_selected_widget)
         self.model_status_stack.setCurrentWidget(self.no_model_selected_widget)
 
-        self.layout.addLayout(self.top_layout)
+        # self.main_layout.addLayout(self.top_layout) # top_layout is already added to main_layout
         self.edit_config_button = QPushButton("Edit config")
-        self.layout.addWidget(self.edit_config_button)
-        self.setLayout(self.layout)
+        self.main_layout.addWidget(self.edit_config_button) # Use main_layout
+        self.setLayout(self.main_layout) # Use main_layout
         self.edit_config_button.clicked.connect(self.open_config_file)
 
         # --- LlamaRunnerManager instantiation ---
@@ -129,16 +140,24 @@ class MainWindow(QWidget):
             llama_runtimes=self.llama_runtimes,
             default_runtime=self.default_runtime,
             model_status_widgets=self.model_status_widgets,
-            runner_port_ready_for_proxy=self.runner_port_ready_for_proxy,
-            runner_stopped_for_proxy=self.runner_stopped_for_proxy,
+            # runner_port_ready_for_proxy and runner_stopped_for_proxy are now owned by LlamaRunnerManager
             parent=self,
         )
         self.llama_runner_manager.set_concurrent_runners_limit(self.concurrent_runners_limit)
 
-        # --- Start the FastAPI Proxy automatically ---
-        self.start_fastapi_proxy()
-        # --- Start the Ollama Proxy automatically ---
-        self.start_ollama_proxy()
+        # --- Start the FastAPI Proxy (for LM Studio) automatically if enabled ---
+        if self.lmstudio_proxy_enabled:
+            self.start_fastapi_proxy()
+        else:
+            print("LM Studio compatible proxy (FastAPI) is disabled in config.")
+            self.fastapi_proxy_thread = None # Ensure it's None if not started
+
+        # --- Start the Ollama Proxy automatically if enabled ---
+        if self.ollama_proxy_enabled:
+            self.start_ollama_proxy()
+        else:
+            print("Ollama proxy is disabled in config.")
+            self.ollama_proxy_thread = None # Ensure it's None if not started
 
         self._status_check_timer = QTimer(self)
         self._status_check_timer.start(5000)
@@ -242,7 +261,7 @@ class MainWindow(QWidget):
             print("FastAPI Proxy is already running.")
             return
 
-        print("Starting FastAPI Proxy...")
+        print("Starting FastAPI Proxy (for LM Studio)...")
 
         self.fastapi_proxy_thread = FastAPIProxyThread(
             all_models_config=self.models,
@@ -252,10 +271,13 @@ class MainWindow(QWidget):
             request_runner_start_callback=self.llama_runner_manager.request_runner_start,
             prompt_logging_enabled=self.prompt_logging_enabled,
             prompts_logger=self.prompts_logger,
+            # Potentially pass lmstudio_api_key if FastAPIProxyThread is updated to use it
+            # api_key=self.lmstudio_api_key
         )
 
-        self.runner_port_ready_for_proxy.connect(self.fastapi_proxy_thread.on_runner_port_ready)
-        self.runner_stopped_for_proxy.connect(self.fastapi_proxy_thread.on_runner_stopped)
+        # Connect to signals from LlamaRunnerManager instance
+        self.llama_runner_manager.runner_port_ready_for_proxy.connect(self.fastapi_proxy_thread.on_runner_port_ready)
+        self.llama_runner_manager.runner_stopped_for_proxy.connect(self.fastapi_proxy_thread.on_runner_stopped)
 
         self.fastapi_proxy_thread.start()
 
@@ -280,8 +302,9 @@ class MainWindow(QWidget):
             prompts_logger=self.prompts_logger,
         )
 
-        self.runner_port_ready_for_proxy.connect(self.ollama_proxy_thread.on_runner_port_ready)
-        self.runner_stopped_for_proxy.connect(self.ollama_proxy_thread.on_runner_stopped)
+        # Connect to signals from LlamaRunnerManager instance
+        self.llama_runner_manager.runner_port_ready_for_proxy.connect(self.ollama_proxy_thread.on_runner_port_ready)
+        self.llama_runner_manager.runner_stopped_for_proxy.connect(self.ollama_proxy_thread.on_runner_stopped)
 
         self.ollama_proxy_thread.start()
 
@@ -313,33 +336,31 @@ class MainWindow(QWidget):
 
     # Runner management slots moved to LlamaRunnerManager
 
-    def customEvent(self, event):
+    def customEvent(self, event: QEvent):
         """
-        Handles custom events posted from other threads (like LlamaRunnerThread).
+        Handles custom events posted from other threads, primarily from LlamaRunnerManager.
         """
-        if event.type() == QEvent.User + 1:
-            sender_thread = self.sender()
-            if hasattr(self, "llama_runner_manager") and hasattr(sender_thread, "model_name"):
-                self.llama_runner_manager.on_llama_runner_started(sender_thread.model_name)
-        elif event.type() == QEvent.User + 2:
-            sender_thread = self.sender()
-            if hasattr(self, "llama_runner_manager") and hasattr(sender_thread, "model_name") and hasattr(sender_thread.runner, "get_port"):
-                self.llama_runner_manager.on_llama_runner_port_ready_and_emit(sender_thread.model_name, sender_thread.runner.get_port())
-        elif event.type() == QEvent.User + 3:
-            sender_thread = self.sender()
-            if hasattr(self, "llama_runner_manager") and hasattr(sender_thread, "model_name"):
-                self.llama_runner_manager.on_llama_runner_error(sender_thread.model_name, event.message, event.output_buffer)
-        elif event.type() == QEvent.User + 4:
+        # Check for events from LlamaRunnerManager (posted to its parent, which is MainWindow)
+        if event.type() == LlamaRunnerManager.MANAGER_PARENT_NOTIFICATION_EVENT_TYPE:
             model_name = getattr(event, 'model_name', None)
-            if hasattr(self, "llama_runner_manager"):
-                if model_name:
-                    self.llama_runner_manager.on_llama_runner_stopped(model_name)
-                else:
-                    sender_thread = self.sender()
-                    if hasattr(sender_thread, "model_name"):
-                        self.llama_runner_manager.on_llama_runner_stopped(sender_thread.model_name)
-                    else:
-                        logging.warning("Received stopped custom event without model_name and sender is not LlamaRunnerThread.")
+            if model_name and hasattr(self, "llama_runner_manager"):
+                # This event type from LlamaRunnerManager is used for cleanup/status updates
+                # typically when a runner is found to be already stopped or exited unexpectedly.
+                logging.debug(f"MainWindow received MANAGER_PARENT_NOTIFICATION_EVENT for {model_name}")
+                self.llama_runner_manager.on_llama_runner_stopped(model_name)
+            else:
+                logging.warning(f"MainWindow received MANAGER_PARENT_NOTIFICATION_EVENT without model_name or llama_runner_manager not found.")
+
+        # The LlamaRunnerThread now posts RunnerErrorEvent and RunnerStoppedEvent to LlamaRunnerManager.
+        # LlamaRunnerManager handles these and updates UI or emits its own signals.
+        # MainWindow should not need to handle QEvent.User + 1, +2, +3 from LlamaRunnerThread directly anymore.
+        # If MainWindow needs to react to these, it should connect to signals from LlamaRunnerManager.
+
+        # Example if MainWindow needed to handle RunnerErrorEvent directly (not the current pattern):
+        # elif event.type() == RunnerErrorEvent.EVENT_TYPE:
+        #     if isinstance(event, RunnerErrorEvent) and hasattr(self, "llama_runner_manager"):
+        #         self.llama_runner_manager.on_llama_runner_error(event.model_name, event.message, event.output_buffer)
+
         else:
             super().customEvent(event)
 

@@ -29,8 +29,19 @@ def ensure_config_exists():
 
     if not os.path.exists(CONFIG_FILE):
         try:
+            default_config = {
+                "models": {},
+                "llama-runtimes": {},
+                "default_runtime": "llama-server",
+                "concurrentRunners": 1,
+                "proxies": {
+                    "ollama": {"enabled": True},
+                    "lmstudio": {"enabled": True, "api_key": None}
+                },
+                "logging": {"prompt_logging_enabled": False}
+            }
             with open(CONFIG_FILE, "w") as f:
-                json.dump({}, f)  # Create an empty JSON file
+                json.dump(default_config, f, indent=2)
         except OSError as e:
             print(f"Error creating config file: {e}")
             logging.error(f"Error creating config file: {e}")
@@ -49,6 +60,43 @@ def load_config():
         with open(CONFIG_FILE, "r") as f:
             config = json.load(f)
 
+            # Ensure default_runtime and concurrentRunners exist
+            if "default_runtime" not in config:
+                config["default_runtime"] = "llama-server"
+            if "concurrentRunners" not in config:
+                config["concurrentRunners"] = 1
+
+            # Ensure proxies section and its sub-keys exist with defaults
+            proxies_config = config.get("proxies", {})
+            if not isinstance(proxies_config, dict): # Handle case where 'proxies' might exist but not as a dict
+                proxies_config = {}
+
+            ollama_proxy_config = proxies_config.get("ollama", {})
+            if not isinstance(ollama_proxy_config, dict):
+                ollama_proxy_config = {}
+            if "enabled" not in ollama_proxy_config:
+                ollama_proxy_config["enabled"] = True
+            proxies_config["ollama"] = ollama_proxy_config
+
+            lmstudio_proxy_config = proxies_config.get("lmstudio", {})
+            if not isinstance(lmstudio_proxy_config, dict):
+                lmstudio_proxy_config = {}
+            if "enabled" not in lmstudio_proxy_config:
+                lmstudio_proxy_config["enabled"] = True
+            if "api_key" not in lmstudio_proxy_config: # lmstudio might not always have api_key, default to None
+                lmstudio_proxy_config["api_key"] = None
+            proxies_config["lmstudio"] = lmstudio_proxy_config
+            
+            config["proxies"] = proxies_config
+
+            # Ensure logging section and its sub-keys exist with defaults
+            logging_config = config.get("logging", {})
+            if not isinstance(logging_config, dict): # Handle case where 'logging' might exist but not as a dict
+                logging_config = {}
+            if "prompt_logging_enabled" not in logging_config:
+                logging_config["prompt_logging_enabled"] = False
+            config["logging"] = logging_config
+            
             # Process llama-runtimes to normalize structure
             raw_runtimes = config.get("llama-runtimes")
             if isinstance(raw_runtimes, dict):

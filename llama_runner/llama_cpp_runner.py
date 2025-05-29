@@ -3,6 +3,7 @@ import subprocess
 import logging
 import re
 import collections  # Import collections
+from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
@@ -37,7 +38,7 @@ class LlamaCppRunner(QObject):
         self.model_path = model_path
         self.llama_cpp_runtime = llama_cpp_runtime or "llama-server"
         self.kwargs = kwargs
-        self.process: subprocess.Popen = None # type: ignore
+        self.process: Optional[asyncio.subprocess.Process] = None
         self.startup_pattern = re.compile(
             r"main: server is listening on"
         )  # Regex to detect startup
@@ -51,7 +52,7 @@ class LlamaCppRunner(QObject):
         """
         Starts the llama.cpp server.
         """
-        if self.process and self.process.poll() is None:
+        if self.process and self.process.returncode is None:
             print(f"llama.cpp server for {self.model_name} is already running.")
             return
 
@@ -234,42 +235,58 @@ class LlamaCppRunner(QObject):
         """
         Stops the llama.cpp server.
         """
+        if self.process:
+            logging.info(f"stop() called for {self.model_name}. PID: {self.process.pid}, Return Code: {self.process.returncode}")
+        else:
+            logging.info(f"stop() called for {self.model_name}. Process is None.")
+
         if (
             self.process and self.process.returncode is None
         ):  # Check if process is running
             print(
                 f"Stopping llama.cpp server for {self.model_name} (PID: {self.process.pid})."
             )
+            logging.info(f"Attempting to stop {self.model_name} (PID: {self.process.pid}). Current return code: {self.process.returncode}")
             try:
+                logging.info(f"Calling terminate() on PID: {self.process.pid} for {self.model_name}")
                 self.process.terminate()
                 # Wait for the process to terminate gracefully
                 await asyncio.wait_for(self.process.wait(), timeout=15) # type: ignore
                 print(f"llama.cpp server for {self.model_name} terminated gracefully.")
+                logging.info(f"PID: {self.process.pid} for {self.model_name} terminated gracefully.")
             except asyncio.TimeoutError:
                 print(
                     f"llama.cpp server for {self.model_name} did not terminate in 15 seconds, killing it."
                 )
+                logging.warning(f"Timeout stopping PID: {self.process.pid} for {self.model_name}. Killing.")
                 try:
+                    logging.info(f"Calling kill() on PID: {self.process.pid} for {self.model_name}")
                     self.process.kill()
                     await asyncio.wait_for(
                         self.process.wait(), timeout=5 # type: ignore
                     )  # Wait a bit for kill
+                    logging.info(f"PID: {self.process.pid} for {self.model_name} killed.")
                 except Exception as kill_e:
                     print(f"Error killing process {self.process.pid}: {kill_e}")
+                    logging.error(f"Error killing PID: {self.process.pid} for {self.model_name}: {kill_e}")
             except Exception as e:
                 print(f"Error during process termination for {self.model_name}: {e}")
+                logging.error(f"Exception during termination of PID: {self.process.pid} for {self.model_name}: {e}")
             finally:
                 # Emit a signal to notify the GUI that the server has stopped
+                logging.info(f"Emitting stopped signal for {self.model_name} (PID: {self.process.pid if self.process else 'N/A'}). Final return code: {self.process.returncode if self.process else 'N/A'}")
                 self.stopped.emit()
         elif self.process and self.process.returncode is not None:
             print(
                 f"llama.cpp server for {self.model_name} was already stopped (code {self.process.returncode})."
             )
+            logging.info(f"stop() called for {self.model_name} (PID: {self.process.pid}), but process already stopped with code {self.process.returncode}.")
             self.process = None  # type: ignore # Ensure process reference is cleared
         else:
             print(
                 f"llama.cpp server for {self.model_name} is not running (no process)."
             )
+            logging.info(f"stop() called for {self.model_name}, but no process was running.")
             self.process = None  # type: ignore # Ensure process reference is cleared
 
     def is_running(self):

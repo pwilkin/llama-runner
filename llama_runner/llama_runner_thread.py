@@ -1,25 +1,51 @@
 import asyncio
 import logging
 import traceback
-from typing import Optional
+from typing import Optional, List
 
 from PySide6.QtCore import QThread, Signal, QEvent, QCoreApplication
 
 from llama_runner.llama_cpp_runner import LlamaCppRunner
+
+# Custom Event Types
+# It's generally safer to register event types to avoid conflicts.
+# If QEvent.User is problematic with Pylance, direct integers or registered types are better.
+# For simplicity and given the existing QEvent.User usage, we'll try to keep it,
+# but subclassing QEvent is the most robust way to pass data.
+
+# Use QEvent.registerEventType() for unique event IDs.
+# It's important that this is called only once per type.
+# We can do this by assigning the result to a class variable.
+
+class RunnerStoppedEvent(QEvent):
+    EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
+    def __init__(self, model_name: str):
+        super().__init__(RunnerStoppedEvent.EVENT_TYPE)
+        self.model_name = model_name
+
+class RunnerErrorEvent(QEvent):
+    EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
+    def __init__(self, model_name: str, message: str, output_buffer: List[str]):
+        super().__init__(RunnerErrorEvent.EVENT_TYPE)
+        self.model_name = model_name
+        self.message = message
+        self.output_buffer = output_buffer
+
 
 class LlamaRunnerThread(QThread):
     """
     QThread to run the LlamaCppRunner in a separate thread to avoid blocking the UI.
     """
     # Define a custom event type for signaling that the runner has stopped
-    STOPPED_EVENT_TYPE = QEvent.Type(QEvent.User + 5)
+    # STOPPED_EVENT_TYPE = QEvent.Type(QEvent.User + 5) # Replaced by RunnerStoppedEvent
+    # ERROR_EVENT_TYPE = QEvent.Type(QEvent.User + 3)  # Replaced by RunnerErrorEvent
 
     started = Signal(str)
     # stopped = Signal(str) # Removed direct stopped signal
     error = Signal(str, list) # Signal includes error message and output buffer
     port_ready = Signal(str, int) # Signal includes model_name and port
 
-    def __init__(self, model_name: str, model_path: str, llama_cpp_runtime: str = None, parent=None, **kwargs):
+    def __init__(self, model_name: str, model_path: str, llama_cpp_runtime: Optional[str] = None, parent=None, **kwargs):
         super().__init__(parent)
         self.model_name = model_name
         self.model_path = model_path
@@ -83,7 +109,7 @@ class LlamaRunnerThread(QThread):
             self.runner = LlamaCppRunner(
                 model_name=self.model_name,
                 model_path=self.model_path,
-                llama_cpp_runtime=self.llama_cpp_runtime,
+                llama_cpp_runtime=self.llama_cpp_runtime if self.llama_cpp_runtime is not None else "", # Provide default for LlamaCppRunner
                 **self.kwargs
             )
             # The start method now raises exceptions on failure
@@ -101,9 +127,11 @@ class LlamaRunnerThread(QThread):
             self._output_reader_task = self.loop.create_task(self._read_output_continuously())
 
             # Wait for the process to exit
-            await self.runner.process.wait()
+            # If self.runner.process.wait() is blocking, run it in an executor
+            if self.runner and self.runner.process:
+                await self.runner.process.wait() # Correctly await the coroutine
 
-            logging.info(f"Llama.cpp process for {self.model_name} exited with code {self.runner.process.returncode}")
+            logging.info(f"Llama.cpp process for {self.model_name} exited with code {self.runner.process.returncode if self.runner and self.runner.process else 'N/A'}")
 
         except Exception as e:
             logging.error(f"Error running LlamaCppRunner: {e}\n{traceback.format_exc()}")
@@ -131,19 +159,30 @@ class LlamaRunnerThread(QThread):
                 output_buffer = self.runner.get_output_buffer() if self.runner else []
                 logging.error(error_message)
                 # Use QCoreApplication.instance().postEvent to emit signals from the asyncio thread
-                error_event = QEvent(QEvent.Type(QEvent.User + 3)) # Custom event for error
-                error_event.message = error_message
-                error_event.output_buffer = output_buffer
-                QCoreApplication.instance().postEvent(self, error_event)
+                error_event = RunnerErrorEvent(self.model_name, error_message, output_buffer)
+                app_instance = QCoreApplication.instance()
+                parent_object = self.parent()
+                logging.info(f"LRT ({self.model_name}): Attempting to post RunnerErrorEvent. Parent type: {type(parent_object)}, Parent exists: {bool(parent_object)}")
+                if app_instance and parent_object:
+                    logging.info(f"LRT ({self.model_name}): Posting RunnerErrorEvent to parent {parent_object}.")
+                    app_instance.postEvent(parent_object, error_event)
+                else:
+                    logging.error(f"LRT ({self.model_name}): Could not post RunnerErrorEvent. App instance: {bool(app_instance)}, Parent: {bool(parent_object)}.")
                 self._error_emitted = True # Set flag
 
             self.is_running = False # Ensure this is false
             # self.stopped.emit(self.model_name) # Removed direct stopped signal
 
             # Post a custom event to the parent (LlamaRunnerManager) to signal stopped
-            stopped_event = QEvent(LlamaRunnerThread.STOPPED_EVENT_TYPE)
-            stopped_event.model_name = self.model_name
-            QCoreApplication.instance().postEvent(self.parent(), stopped_event)
+            stopped_event = RunnerStoppedEvent(self.model_name)
+            app_instance = QCoreApplication.instance()
+            parent_object = self.parent()
+            logging.info(f"LRT ({self.model_name}): Attempting to post RunnerStoppedEvent. Parent type: {type(parent_object)}, Parent exists: {bool(parent_object)}")
+            if app_instance and parent_object:
+                logging.info(f"LRT ({self.model_name}): Posting RunnerStoppedEvent to parent {parent_object}.")
+                app_instance.postEvent(parent_object, stopped_event)
+            else:
+                logging.error(f"LRT ({self.model_name}): Could not post RunnerStoppedEvent. App instance: {bool(app_instance)}, Parent: {bool(parent_object)}.")
 
     async def _read_output_continuously(self):
         """

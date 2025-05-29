@@ -5,30 +5,37 @@ from typing import Optional, Dict, Any
 
 from PySide6.QtCore import QObject, QTimer, QCoreApplication, QEvent, Signal, Slot
 
-from llama_runner.llama_runner_thread import LlamaRunnerThread
+# Import the custom event classes
+from llama_runner.llama_runner_thread import LlamaRunnerThread, RunnerStoppedEvent, RunnerErrorEvent
 from llama_runner.error_output_dialog import ErrorOutputDialog
 
 class LlamaRunnerManager(QObject):
+    # Define a custom event type for events posted to the parent (e.g., MainWindow)
+    # This replaces the QEvent.User + 4 magic number.
+    MANAGER_PARENT_NOTIFICATION_EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
+
+    # Define signals directly as class attributes
+    runner_port_ready_for_proxy = Signal(str, int)
+    runner_stopped_for_proxy = Signal(str)
+
     def __init__(
         self,
         models: dict,
         llama_runtimes: dict,
         default_runtime: str,
         model_status_widgets: dict,
-        runner_port_ready_for_proxy: Signal,
-        runner_stopped_for_proxy: Signal,
+        # runner_port_ready_for_proxy and runner_stopped_for_proxy are now class attributes
         parent=None,
     ):
         super().__init__(parent)
         # Import here to avoid circular import issues
-        from llama_runner.llama_runner_thread import LlamaRunnerThread
-        self.LlamaRunnerThread = LlamaRunnerThread
+        # self.LlamaRunnerThread = LlamaRunnerThread # LlamaRunnerThread is already imported directly
         self.models = models
         self.llama_runtimes = llama_runtimes
         self.default_runtime = default_runtime
         self.model_status_widgets = model_status_widgets
-        self.runner_port_ready_for_proxy = runner_port_ready_for_proxy
-        self.runner_stopped_for_proxy = runner_stopped_for_proxy
+        # self.runner_port_ready_for_proxy = runner_port_ready_for_proxy # Removed, now class attribute
+        # self.runner_stopped_for_proxy = runner_stopped_for_proxy # Removed, now class attribute
 
         self.llama_runner_threads: Dict[str, LlamaRunnerThread] = {}
         self._runner_startup_futures: Dict[str, asyncio.Future] = {}
@@ -169,10 +176,31 @@ class LlamaRunnerManager(QObject):
             self.llama_runner_threads[model_name].stop()
         else:
             logging.warning(f"Attempted to stop non-running thread {model_name}. Cleaning up state.")
-            if model_name in self.llama_runner_threads:
-                stopped_event = QEvent(QEvent.Type(QEvent.User + 4))
-                stopped_event.model_name = model_name
-                QCoreApplication.instance().postEvent(self.parent(), stopped_event)
+            # If the thread isn't running, we might still want to ensure UI cleanup.
+            # The original code posted an event to self.parent().
+            # This could be a signal to MainWindow or similar.
+            # We'll keep this logic for now, assuming it's handled by the parent.
+            # However, if this is meant to trigger on_llama_runner_stopped,
+            # it should use RunnerStoppedEvent and post to self.
+            if model_name in self.llama_runner_threads: # Check if thread object exists
+                # To trigger on_llama_runner_stopped for cleanup if thread is gone but not cleaned:
+                # self.on_llama_runner_stopped(model_name)
+                # Or, if an event is preferred for the manager itself:
+                # QCoreApplication.instance().postEvent(self, RunnerStoppedEvent(model_name))
+
+                # Original logic: post a generic event to parent.
+                # This might be for a different purpose than the thread's stopped event.
+                parent_event = QEvent(LlamaRunnerManager.MANAGER_PARENT_NOTIFICATION_EVENT_TYPE)
+                setattr(parent_event, 'model_name', model_name) # Dynamically add attr if needed by parent
+                app_instance = QCoreApplication.instance()
+                parent_object = self.parent()
+                if app_instance and parent_object:
+                    app_instance.postEvent(parent_object, parent_event)
+                else:
+                    logging.warning(f"Could not post parent event for {model_name} (stop non-running): App/Parent None.")
+            else: # If thread object doesn't even exist, call stop handler directly for cleanup
+                self.on_llama_runner_stopped(model_name)
+
 
     def stop_all_llama_runners(self):
         print("Stopping all Llama Runners...")
@@ -234,12 +262,18 @@ class LlamaRunnerManager(QObject):
             logging.debug(f"Runner {model_name} errored while startup Future was pending.")
             self._runner_startup_futures[model_name].set_exception(RuntimeError(f"Runner for {model_name} errored during startup: {message}"))
 
-    def customEvent(self, event):
+    def customEvent(self, event: QEvent):
         # Handle custom stopped event from LlamaRunnerThread
-        if event.type() == self.LlamaRunnerThread.STOPPED_EVENT_TYPE:
-            model_name = getattr(event, 'model_name', None)
-            if model_name:
-                self.on_llama_runner_stopped(model_name)
+        if event.type() == RunnerStoppedEvent.EVENT_TYPE:
+            if isinstance(event, RunnerStoppedEvent):
+                self.on_llama_runner_stopped(event.model_name)
+            else:
+                logging.warning(f"Received RunnerStoppedEvent.EVENT_TYPE but event is not RunnerStoppedEvent instance: {type(event)}")
+        elif event.type() == RunnerErrorEvent.EVENT_TYPE:
+            if isinstance(event, RunnerErrorEvent):
+                self.on_llama_runner_error(event.model_name, event.message, event.output_buffer)
+            else:
+                logging.warning(f"Received RunnerErrorEvent.EVENT_TYPE but event is not RunnerErrorEvent instance: {type(event)}")
         else:
             super().customEvent(event)
 
@@ -269,6 +303,12 @@ class LlamaRunnerManager(QObject):
                 return_code = thread.runner.process.returncode
                 if return_code is not None:
                     logging.warning(f"Detected exited runner process for {model_name}. Return code: {return_code}")
-                    stopped_event = QEvent(QEvent.User + 4)
-                    stopped_event.model_name = model_name
-                    QCoreApplication.instance().postEvent(self.parent(), stopped_event)
+                    # This posts an event to the parent, similar to stop_llama_runner for non-running.
+                    parent_event = QEvent(LlamaRunnerManager.MANAGER_PARENT_NOTIFICATION_EVENT_TYPE)
+                    setattr(parent_event, 'model_name', model_name) # Dynamically add attr if needed by parent
+                    app_instance = QCoreApplication.instance()
+                    parent_object = self.parent()
+                    if app_instance and parent_object:
+                        app_instance.postEvent(parent_object, parent_event)
+                    else:
+                        logging.warning(f"Could not post parent event for {model_name} (check_runner_statuses): App/Parent None.")

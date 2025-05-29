@@ -6,26 +6,34 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 # Attempt to import numpy
+np = None # Initialize to None for Pylance
 try:
-    import numpy as np
+    import numpy as np_imported # Import with a temporary name
+    np = np_imported # Assign to the desired name 'np' if import succeeds
     NUMPY_AVAILABLE = True
 except ImportError:
+    # np remains None as initialized above
     logging.warning("The 'numpy' library is not installed. Handling of numpy array metadata may be limited.")
     NUMPY_AVAILABLE = False
 
 # Attempt to import the gguf library and specific components
+GGUFReader = None # Initialize to None for Pylance
+LlamaFileType = None # Initialize to None for Pylance
 try:
-    from gguf import GGUFReader
-    # Corrected import path: Use gguf.constants for LlamaFileType
-    from gguf.constants import LlamaFileType # Import the correct enum from constants
+    from gguf import GGUFReader as GGUFReader_imported # Import with a temporary name
+    from gguf.constants import LlamaFileType as LlamaFileType_imported # Import with a temporary name
+    GGUFReader = GGUFReader_imported # Assign if import succeeds
+    LlamaFileType = LlamaFileType_imported # Assign if import succeeds
     GGUF_AVAILABLE = True
-    logging.debug("Successfully imported GGUFReader and LlamaFileType.") # Debug log for success
+    logging.debug("Successfully imported GGUFReader and LlamaFileType.")
 except ImportError as e:
+    # GGUFReader and LlamaFileType remain None as initialized above
     logging.warning(f"ImportError: The 'gguf' library or required components are missing: {e}. Metadata extraction will be disabled.")
     GGUF_AVAILABLE = False
 except Exception as e:
+    # GGUFReader and LlamaFileType remain None as initialized above
     logging.warning(f"Error importing gguf components: {e}. Metadata extraction may be limited.")
-    GGUF_AVAILABLE = False # Treat as unavailable if import fails unexpectedly
+    GGUF_AVAILABLE = False
 
 # --- Add debug logging for GGUF_AVAILABLE status ---
 logging.debug(f"GGUF_AVAILABLE status after import attempt: {GGUF_AVAILABLE}")
@@ -91,7 +99,8 @@ def prepare_for_json(data: Any) -> Any:
         return {k: prepare_for_json(v) for k, v in data.items()}
     elif isinstance(data, (list, tuple)):
         return [prepare_for_json(item) for item in data]
-    elif NUMPY_AVAILABLE and isinstance(data, (np.ndarray, np.memmap)):
+    # Ensure np is not None before using its attributes
+    elif NUMPY_AVAILABLE and np is not None and isinstance(data, (np.ndarray, np.memmap)): # Explicit np is not None
         if data.size == 1:
             # Convert singleton numpy arrays to their scalar item
             try:
@@ -107,7 +116,8 @@ def prepare_for_json(data: Any) -> Any:
                     return bytes(data).decode('utf-8', errors='replace')
                 else:
                     # Convert numeric array to string
-                    return np.array2string(data, separator=', ', max_line_width=np.inf)
+                    # Use a very large int for max_line_width instead of np.inf
+                    return np.array2string(data, separator=', ', max_line_width=1000000)
             except Exception:
                 # Fallback to generic string representation
                 return str(data)
@@ -144,6 +154,10 @@ def extract_gguf_metadata(model_path: str, model_config: Dict[str, Any]) -> Opti
         logging.error(f"Model file not found for metadata extraction: {model_path}")
         return None
 
+    if not GGUFReader: # Check if GGUFReader was successfully imported (it's initialized to None if import fails)
+        logging.error("GGUFReader not available due to import error. Cannot extract metadata.")
+        return None
+
     try:
         reader = GGUFReader(model_path, 'r')
         raw_metadata = {} # Initialize raw_metadata dictionary
@@ -160,7 +174,8 @@ def extract_gguf_metadata(model_path: str, model_config: Dict[str, Any]) -> Opti
                 # Add detailed logging for extracted values, especially non-scalar ones
                 if isinstance(value, (list, tuple)):
                      logging.debug(f"Extracted list/tuple metadata for key '{key}': Type={type(value)}, Length={len(value)}, Value={value}")
-                elif NUMPY_AVAILABLE and isinstance(value, (np.ndarray, np.memmap)):
+                # Ensure np is not None before using its attributes
+                elif NUMPY_AVAILABLE and np is not None and isinstance(value, (np.ndarray, np.memmap)): # Explicit np is not None
                      logging.debug(f"Extracted numpy array metadata for key '{key}': Type={type(value)}, Shape={value.shape}, Value={value}")
                 else:
                      logging.debug(f"Extracted scalar metadata for key '{key}': Type={type(value)}, Value={value}")
@@ -179,35 +194,41 @@ def extract_gguf_metadata(model_path: str, model_config: Dict[str, Any]) -> Opti
             value = metadata_dict.get(key)
 
             # Handle numpy arrays/memmaps first
-            if NUMPY_AVAILABLE and isinstance(value, (np.ndarray, np.memmap)):
+            # Ensure np is not None before using its attributes
+            if NUMPY_AVAILABLE and np is not None and isinstance(value, (np.ndarray, np.memmap)): # Explicit np is not None
                 if value.size == 1:
-                    # If it's a single-element array, extract the scalar item
                     try:
-                        return value.item()
+                        return value.item() # Extracts the single scalar value
                     except Exception as e:
                         logging.warning(f"Could not extract scalar item from numpy array for key '{key}': {e}")
                         return default
-                elif value.ndim == 1:
-                    # If it's a 1D array with multiple elements, assume it's a string (bytes or char codes)
+                elif value.ndim == 1: # 1D array
                     try:
-                        # Attempt to decode bytes or convert array of numbers to string
-                        if value.dtype == np.uint8 or value.dtype == np.int8:
-                             # Assume bytes
-                             return bytes(value).decode('utf-8', errors='replace')
-                        else:
-                             # Attempt to convert array of numbers to string representation
-                             return np.array2string(value, separator=', ', max_line_width=np.inf)
+                        if value.dtype == np.uint8 or value.dtype == np.int8: # Byte array
+                            return bytes(value).decode('utf-8', errors='replace')
+                        else: # Other numeric 1D arrays
+                            # Return as a list of Python native types if possible, or string as fallback
+                            return value.tolist() # Converts to Python list
                     except Exception as e:
-                         logging.warning(f"Could not convert numpy array to string for key '{key}': {e}")
-                         return default
-                else:
-                     # Handle multi-dimensional arrays or other complex cases by returning default
-                     logging.warning(f"Unsupported numpy array shape/ndim for key '{key}': {value.shape}")
-                     return default
+                        logging.warning(f"Could not convert 1D numpy array for key '{key}': {e}")
+                        return str(value) # Fallback to string representation
+                else: # Multi-dimensional arrays
+                    logging.warning(f"Unsupported numpy array shape/ndim for key '{key}': {value.shape}. Returning as string.")
+                    return str(value) # Fallback to string representation
 
             # Keep unwrapping lists/tuples until a non-container or None is found
             while isinstance(value, (list, tuple)) and len(value) > 0:
                 value = value[0]
+
+            # If value is a string that represents a number, try to convert it
+            if isinstance(value, str):
+                try:
+                    return int(value)
+                except ValueError:
+                    try:
+                        return float(value)
+                    except ValueError:
+                        pass # Not an int or float string, return as is
 
             if value is None:
                  return default
@@ -265,24 +286,29 @@ def extract_gguf_metadata(model_path: str, model_config: Dict[str, Any]) -> Opti
         if GGUF_AVAILABLE and file_type_val is not None:
             try:
                 # Attempt to convert file_type_val to an integer
-                if isinstance(file_type_val, str):
-                    file_type_int = int(file_type_val)
-                elif isinstance(file_type_val, int):
+                if isinstance(file_type_val, str): # If it's a string, try to convert to int
+                    try:
+                        file_type_int = int(file_type_val)
+                    except ValueError:
+                        logging.warning(f"Could not convert 'general.file_type' string '{file_type_val}' to int for {model_path}.")
+                        file_type_int = None
+                elif isinstance(file_type_val, int): # If it's already an int
                     file_type_int = file_type_val
-                else:
+                else: # If it's neither string nor int
                     logging.warning(f"'general.file_type' is not an integer or string ({type(file_type_val)}) in {model_path}. Value: {file_type_val}")
                     file_type_int = None # Fall through to heuristic
 
-                if file_type_int is not None:
-                    # Use the integer value to get the enum name from LlamaFileType
-                    quantization = LlamaFileType(file_type_int).name
-                # else: fall through to heuristic
+                if file_type_int is not None and LlamaFileType is not None: # Check LlamaFileType availability (it's initialized to None if import fails)
+                    try:
+                        # Use the integer value to get the enum name from LlamaFileType
+                        quantization = LlamaFileType(file_type_int).name
+                    except ValueError: # Handles cases where the int value is not a valid member of LlamaFileType
+                        logging.warning(f"Integer value {file_type_int} for 'general.file_type' is not a valid LlamaFileType member for {model_path}.")
+                        quantization = f"Type_{file_type_int}" # Fallback if enum value is unknown
+                # else: file_type_int is None, fall through to heuristic
 
-            except ValueError:
-                logging.warning(f"Unknown LlamaFileType integer value: {file_type_val} for {model_path}")
-                quantization = f"Type_{file_type_val}" # Fallback if enum value is unknown
-            except Exception as e:
-                 logging.warning(f"Error getting quantization name from LlamaFileType enum for {model_path}: {e}")
+            except Exception as e: # Catch other exceptions during LlamaFileType processing
+                 logging.warning(f"Error processing 'general.file_type' ({file_type_val}) for {model_path}: {e}")
                  # Fall through to heuristic
         # Fallback to heuristic if enum method fails or is not available
         if quantization == "Unknown":
@@ -400,6 +426,21 @@ def get_model_lmstudio_format(model_name: str, model_path: str, model_config: Di
     if cached_metadata:
         # Update the state based on current runtime status
         cached_metadata["state"] = "loaded" if is_running else "not-loaded"
+
+        # Ensure model_id from model_config takes precedence if provided
+        if "model_id" in model_config and model_config["model_id"]:
+            config_model_id = model_config["model_id"]
+            # Check if cached_metadata has an 'id' and if it differs
+            if cached_metadata.get("id") != config_model_id:
+                logging.info(
+                    f"Model '{model_name}': Config model_id '{config_model_id}' "
+                    f"differs from cached id '{cached_metadata.get('id')}'. Overriding and updating cache."
+                )
+                cached_metadata["id"] = config_model_id
+                # Re-save the updated metadata to cache.
+                # file_size was determined near the start of this function (line 412).
+                save_metadata_to_cache(model_name, file_size, cached_metadata)
+        
         return cached_metadata
     else:
         logging.info(f"Cache miss or invalid for {model_name} (size: {file_size}). Extracting metadata...")
