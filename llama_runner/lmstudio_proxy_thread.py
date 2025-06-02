@@ -44,6 +44,15 @@ async def _get_lmstudio_models_handler(request: Request):
         all_models_data = gguf_metadata.get_all_models_lmstudio_format(
             all_models_config, is_model_running_callback
         )
+        # Add capabilities for models with has_tools
+        id_mapping = gguf_metadata.get_model_name_to_id_mapping(all_models_config)
+        id_to_internal = {v: k for k, v in id_mapping.items()}
+        for model in all_models_data:
+            internal_name = id_to_internal.get(model['id'])
+            if internal_name:
+                model_config = all_models_config.get(internal_name, {})
+                if model_config.get('has_tools'):
+                    model['capabilities'] = ["tool_use"]
         return JSONResponse(content={
             "object": "list",
             "data": all_models_data
