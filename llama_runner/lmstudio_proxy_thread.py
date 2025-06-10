@@ -583,7 +583,7 @@ async def _dynamic_route_v1_request_generator(
                     except json.JSONDecodeError:
                         logging.warning(f"Could not decode non-streaming backend response as JSON. Yielding raw. Status: {proxy_response.status_code}")
                         yield f'data: {response_body.decode("utf-8", errors="replace")}\n\n'.encode('utf-8')
-                    yield f'data: [DONE]\n\n'.encode('utf-8')
+                    yield 'data: [DONE]\n\n'.encode('utf-8')
 
         except httpx.RequestError as e:
             logging.error(f"Error forwarding stream to runner {model_name}: {e}\n{traceback.format_exc()}")
