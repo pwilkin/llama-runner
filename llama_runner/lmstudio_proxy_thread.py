@@ -3,7 +3,7 @@ import asyncio
 import logging
 import traceback
 import json
-from typing import Dict, Any, Callable, Optional
+from typing import Dict, Any, Callable, Optional, AsyncGenerator
 
 # Removed: from litellm.proxy.proxy_server import app
 # Standard library imports
@@ -626,6 +626,7 @@ async def _dynamic_route_v1_request_generator(
 @app.post("/api/v0/chat/completions")
 async def _proxy_v0_chat_completions(request: Request):
     """Proxies /api/v0/chat/completions to /v1/chat/completions."""
+    # logging.debug(f"Proxying /api/v0/chat/completions to /v1/chat/completions") # F541
     logging.debug("Proxying /api/v0/chat/completions to /v1/chat/completions")
     target_v1_path = "/v1/chat/completions"
     try:
@@ -674,6 +675,7 @@ async def _proxy_v0_chat_completions(request: Request):
 @app.post("/api/v0/embeddings")
 async def _proxy_v0_embeddings(request: Request):
     """Proxies /api/v0/embeddings to /v1/embeddings. Embeddings are non-streaming."""
+    # logging.debug(f"Proxying /api/v0/embeddings to /v1/embeddings") # F541
     logging.debug("Proxying /api/v0/embeddings to /v1/embeddings")
     target_v1_path = "/v1/embeddings"
     try:
@@ -712,6 +714,7 @@ async def _proxy_v0_embeddings(request: Request):
 @app.post("/api/v0/completions")
 async def _proxy_v0_completions(request: Request):
     """Proxies /api/v0/completions to /v1/completions."""
+    # logging.debug(f"Proxying /api/v0/completions to /v1/completions") # F541
     logging.debug("Proxying /api/v0/completions to /v1/completions")
     target_v1_path = "/v1/completions"
     try:
