@@ -90,38 +90,30 @@ async def _get_lmstudio_model_handler(model_id: str, request: Request):
 
 
 # --- Handler for dynamic routing of /v1/* requests ---
-async def _dynamic_route_v1_request_generator(
+
+# --- New function for non-streaming responses ---
+async def _fetch_non_streaming_v1_response(
     request: Request,
     target_path: Optional[str] = None,
     body: Optional[dict] = None,
-    body_bytes: Optional[bytes] = None,
-    stream: bool = True  # Add stream parameter
-):
+    body_bytes: Optional[bytes] = None
+) -> Dict[str, Any]:
     """
-    Intercepts /v1/* requests, ensures the target runner is running,
-    and forwards the request to the runner's port, yielding the response chunks.
-    This is an async generator function for streaming responses.
+    Handles non-streaming /v1/* requests. It ensures the target runner is running,
+    forwards the request, and returns the complete response as a dictionary.
     """
     # Access state and callbacks from the request's app instance
-    all_models_config = request.app.state.all_models_config # Use all_models_config
-    runtimes_config = request.app.state.runtimes_config # Use runtimes_config
+    all_models_config = request.app.state.all_models_config
+    runtimes_config = request.app.state.runtimes_config
     get_runner_port_callback = request.app.state.get_runner_port_callback
     request_runner_start_callback = request.app.state.request_runner_start_callback
-    prompt_logging_enabled = getattr(request.app.state, 'prompt_logging_enabled', False) # Safer access
-    prompts_logger = getattr(request.app.state, 'prompts_logger', logging.getLogger()) # Safer access
-    # Access the proxy thread instance to get the futures dictionary
+    prompt_logging_enabled = getattr(request.app.state, 'prompt_logging_enabled', False)
+    prompts_logger = getattr(request.app.state, 'prompts_logger', logging.getLogger())
     proxy_thread_instance = getattr(request.app.state, 'proxy_thread_instance', None)
+
     if not isinstance(proxy_thread_instance, FastAPIProxyThread):
         logging.error("proxy_thread_instance not found or not of type FastAPIProxyThread in app.state")
-        error_payload = {"error": {"message": "Internal server error: Proxy thread not configured.", "type": "internal_error"}}
-        if stream:
-            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-            return
-        else:
-            # This function is now expected to return a dict for non-streaming errors
-            # The caller (e.g., _v1_chat_completions_handler) will need to handle this
-            # by returning a JSONResponse if it receives a dict.
-            return error_payload
+        return {"error": {"message": "Internal server error: Proxy thread not configured.", "type": "internal_error"}}
     proxy_thread: FastAPIProxyThread = proxy_thread_instance
 
 
@@ -135,27 +127,17 @@ async def _dynamic_route_v1_request_generator(
                 try:
                     body = json.loads(body_bytes)
                 except json.JSONDecodeError:
-                    body = None # Ensure body is None if JSON decoding fails
+                    body = None
                     logging.warning(f"Could not decode request body as JSON for {request.url.path}")
-                    error_payload = {"error": {"message": "Invalid JSON request body.", "type": "invalid_request_error"}}
-                    if stream:
-                        yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-                        return
-                    else:
-                        return error_payload
+                    return {"error": {"message": "Invalid JSON request body.", "type": "invalid_request_error"}}
         
         model_name_from_request = None
-        if isinstance(body, dict): # Check if body is a dict before calling .get()
-            model_name_from_request = body.get("model") # This is the ID used by LM Studio (e.g., "vendor/model-name-gguf")
+        if isinstance(body, dict):
+            model_name_from_request = body.get("model")
         
         if not model_name_from_request:
             logging.warning(f"Model name not found in request body for {request.url.path}")
-            error_payload = {"error": {"message": "Model name not specified in request body.", "type": "invalid_request_error"}}
-            if stream:
-                yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-                return
-            else:
-                return error_payload
+            return {"error": {"message": "Model name not specified in request body.", "type": "invalid_request_error"}}
 
         # Log the incoming request if prompt logging is enabled
         if prompt_logging_enabled:
@@ -167,12 +149,7 @@ async def _dynamic_route_v1_request_generator(
 
     except Exception as e:
         logging.error(f"Error reading request body or extracting model name: {e}\n{traceback.format_exc()}")
-        error_payload = {"error": {"message": f"Invalid request: {e}", "type": "invalid_request_error"}}
-        if stream:
-            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-            return
-        else:
-            return error_payload
+        return {"error": {"message": f"Invalid request: {e}", "type": "invalid_request_error"}}
 
     logging.debug(f"Intercepted request for model (ID from request): {model_name_from_request} at path: {request.url.path}")
     logging.debug(f"Available models in all_models_config: {list(all_models_config.keys())}")
@@ -195,12 +172,7 @@ async def _dynamic_route_v1_request_generator(
             logging.warning(f"Request model ID '{model_name_from_request}' matched an internal model name directly. This might indicate a misconfiguration or unexpected request format.")
         else:
             logging.warning(f"Request for unknown model ID: {model_name_from_request}. Could not map to an internal model name.")
-            error_payload = {"error": {"message": f"Model ID '{model_name_from_request}' not found in configuration mapping.", "type": "invalid_request_error"}}
-            if stream:
-                yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-                return
-            else:
-                return error_payload
+            return {"error": {"message": f"Model ID '{model_name_from_request}' not found in configuration mapping.", "type": "invalid_request_error"}}
     
     logging.debug(f"Mapped request model ID '{model_name_from_request}' to internal model name '{internal_model_name}'")
 
@@ -210,24 +182,14 @@ async def _dynamic_route_v1_request_generator(
 
     if not runtime_name_for_model:
         logging.warning(f"Runtime not defined for model '{internal_model_name}' (from request ID '{model_name_from_request}') in main configuration.")
-        error_payload = {"error": {"message": f"Runtime not configured for model '{internal_model_name}'.", "type": "configuration_error"}}
-        if stream:
-            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-            return
-        else:
-            return error_payload
+        return {"error": {"message": f"Runtime not configured for model '{internal_model_name}'.", "type": "configuration_error"}}
 
     # Get the runtime's configuration from runtimes_config
     runtime_details_from_config = runtimes_config.get(runtime_name_for_model)
 
     if not runtime_details_from_config:
         logging.warning(f"Configuration for runtime '{runtime_name_for_model}' (for model '{internal_model_name}') not found in runtimes configuration.")
-        error_payload = {"error": {"message": f"Configuration for runtime '{runtime_name_for_model}' not found.", "type": "configuration_error"}}
-        if stream:
-            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-            return
-        else:
-            return error_payload
+        return {"error": {"message": f"Configuration for runtime '{runtime_name_for_model}' not found.", "type": "configuration_error"}}
 
     # Conditionally remove 'tools' and 'tool_choice' from the request body
     if body_bytes and body: # Ensure body was successfully parsed
@@ -279,26 +241,15 @@ async def _dynamic_route_v1_request_generator(
             logging.error(f"Timeout waiting for runner {model_name} to start after {startup_timeout} seconds.")
             # Clean up the future if it timed out
             if model_name in proxy_thread._runner_ready_futures and not proxy_thread._runner_ready_futures[model_name].done():
-                 proxy_thread._runner_ready_futures[model_name].cancel() # Cancel the future
+                 proxy_thread._runner_ready_futures[model_name].cancel()
                  del proxy_thread._runner_ready_futures[model_name]
-            error_payload = {"error": {"message": f"Timeout starting runner for model '{model_name}'.", "type": "runner_startup_error"}}
-            if stream:
-                yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-                return
-            else:
-                return error_payload
+            return {"error": {"message": f"Timeout starting runner for model '{model_name}'.", "type": "runner_startup_error"}}
         except Exception as e:
             logging.error(f"Error during runner startup for {model_name}: {e}\n{traceback.format_exc()}")
-            # Clean up the future if it failed
             if model_name in proxy_thread._runner_ready_futures and not proxy_thread._runner_ready_futures[model_name].done():
-                 proxy_thread._runner_ready_futures[model_name].set_exception(e) # Set exception on the future
+                 proxy_thread._runner_ready_futures[model_name].set_exception(e)
                  del proxy_thread._runner_ready_futures[model_name]
-            error_payload = {"error": {"message": f"Error starting runner for model '{model_name}': {e}", "type": "runner_startup_error"}}
-            if stream:
-                yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-                return
-            else:
-                return error_payload
+            return {"error": {"message": f"Error starting runner for model '{model_name}': {e}", "type": "runner_startup_error"}}
 
     else:
         logging.debug(f"Runner for {model_name} is already running on port {port}.")
@@ -344,172 +295,334 @@ async def _dynamic_route_v1_request_generator(
                 content_type = proxy_response.headers.get('content-type', '').lower()
                 is_backend_streaming = 'text/event-stream' in content_type
 
-                # Load config and calculate fingerprint (needed in multiple branches)
                 config = request.app.state.all_models_config
-                model_config_for_fingerprint = config.get(model_name, {}) # Renamed to avoid conflict
+                model_config_for_fingerprint = config.get(model_name, {})
                 system_fingerprint = calculate_system_fingerprint(model_config_for_fingerprint)
 
-                if stream: # If the client wants a streaming response
-                    if is_backend_streaming:
-                        logging.debug(f"Streaming response from {target_url} to client (SSE -> SSE)")
-                        async for chunk in proxy_response.aiter_bytes():
-                            if prompt_logging_enabled:
-                                response_chunks.append(chunk)
+                if is_backend_streaming:
+                    logging.debug(f"Collecting streaming response from {target_url} for non-streaming client (SSE -> Full)")
+                    # collected_data_chunks = [] # F841: local variable 'collected_data_chunks' is assigned to but never used
+                    final_response_obj = {"id": "chatcmpl-default", "object": "chat.completion", "created": int(asyncio.get_event_loop().time()), "model": model_name_from_request, "choices": []}
+                    current_choice = {"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": None}
+                    has_content = False
+
+                    async for chunk in proxy_response.aiter_bytes():
+                        if prompt_logging_enabled:
+                            response_chunks.append(chunk)
+                        chunk_str = chunk.decode('utf-8').strip()
+                        if chunk_str.startswith('data: '):
+                            json_payload_str = chunk_str[len('data: '):].strip()
+                            if json_payload_str == '[DONE]':
+                                break
                             try:
-                                chunk_str = chunk.decode('utf-8').strip()
-                                if chunk_str.startswith('data: '):
-                                    json_payload_str = chunk_str[len('data: '):].strip()
-                                    if json_payload_str == '[DONE]':
-                                        yield chunk
-                                        continue
-                                    try:
-                                        data_json = json.loads(json_payload_str)
-                                        if 'system_fingerprint' not in data_json:
-                                            data_json['system_fingerprint'] = system_fingerprint
-                                            modified_chunk_str = f'data: {json.dumps(data_json)}\n\n'
-                                            yield modified_chunk_str.encode('utf-8')
-                                        else:
-                                            yield chunk
-                                    except json.JSONDecodeError:
-                                        logging.warning(f"Could not decode JSON from streaming chunk: {json_payload_str}")
-                                        yield chunk
-                                else:
-                                    yield chunk
-                            except Exception as e:
-                                logging.error(f"Error processing streaming chunk: {e}\n{traceback.format_exc()}")
-                                yield chunk # Yield original chunk in case of processing error
-                    else: # Backend is not streaming, but client wants stream
-                        logging.debug(f"Streaming response from {target_url} to client (Full -> SSE)")
-                        response_body = await proxy_response.aread()
-                        if prompt_logging_enabled:
-                            response_chunks.append(response_body)
-                        try:
-                            # Attempt to parse as JSON and add fingerprint
-                            response_json = json.loads(response_body.decode('utf-8'))
-                            if 'system_fingerprint' not in response_json:
-                                response_json['system_fingerprint'] = system_fingerprint
-                            # Yield as a single SSE data event
-                            yield f'data: {json.dumps(response_json)}\n\n'.encode('utf-8')
-                        except json.JSONDecodeError:
-                            logging.warning(f"Could not decode non-streaming backend response as JSON. Yielding raw. Status: {proxy_response.status_code}")
-                            # If not JSON, still wrap it as a data event if possible, or handle error
-                            yield f'data: {response_body.decode("utf-8", errors="replace")}\n\n'.encode('utf-8') # Best effort
-                        yield f'data: [DONE]\n\n'.encode('utf-8') # Signal completion for client
-                else: # Client wants a non-streaming (full) response
-                    if is_backend_streaming: # Backend is streaming, but client wants full
-                        logging.debug(f"Collecting streaming response from {target_url} for non-streaming client (SSE -> Full)")
-                        collected_data_chunks = []
-                        final_response_obj = {"id": "chatcmpl-default", "object": "chat.completion", "created": int(asyncio.get_event_loop().time()), "model": model_name_from_request, "choices": []}
-                        current_choice = {"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": None}
-                        has_content = False
+                                data_json = json.loads(json_payload_str)
+                                if data_json.get("choices"):
+                                    delta = data_json["choices"][0].get("delta", {})
+                                    if "content" in delta and delta["content"] is not None:
+                                        current_choice["message"]["content"] += delta["content"]
+                                        has_content = True
+                                    if data_json["choices"][0].get("finish_reason"):
+                                        current_choice["finish_reason"] = data_json["choices"][0]["finish_reason"]
+                            except json.JSONDecodeError:
+                                logging.warning(f"Could not decode JSON from streaming chunk for non-streaming client: {json_payload_str}")
 
-                        async for chunk in proxy_response.aiter_bytes():
-                            if prompt_logging_enabled:
-                                response_chunks.append(chunk)
-                            chunk_str = chunk.decode('utf-8').strip()
-                            if chunk_str.startswith('data: '):
-                                json_payload_str = chunk_str[len('data: '):].strip()
-                                if json_payload_str == '[DONE]':
-                                    break
-                                try:
-                                    data_json = json.loads(json_payload_str)
-                                    # Assuming OpenAI chat completion chunk format
-                                    if data_json.get("choices"):
-                                        delta = data_json["choices"][0].get("delta", {})
-                                        if "content" in delta and delta["content"] is not None:
-                                            current_choice["message"]["content"] += delta["content"]
-                                            has_content = True
-                                        if data_json["choices"][0].get("finish_reason"):
-                                            current_choice["finish_reason"] = data_json["choices"][0]["finish_reason"]
-                                    # Collect other top-level fields if needed, e.g., 'id', 'usage'
-                                    # For now, focus on content and finish_reason
-                                except json.JSONDecodeError:
-                                    logging.warning(f"Could not decode JSON from streaming chunk for non-streaming client: {json_payload_str}")
-                                    # Decide how to handle malformed JSON in this context. Skip or error?
+                    if has_content or current_choice["finish_reason"]:
+                        final_response_obj["choices"].append(current_choice)
 
-                        if has_content or current_choice["finish_reason"]:
-                            final_response_obj["choices"].append(current_choice)
+                    if 'system_fingerprint' not in final_response_obj:
+                         final_response_obj['system_fingerprint'] = system_fingerprint
 
-                        if 'system_fingerprint' not in final_response_obj: # Should always be true here
-                             final_response_obj['system_fingerprint'] = system_fingerprint
+                    return final_response_obj
+                else: # Backend is not streaming, client wants full (ideal case for non-streaming)
+                    logging.debug(f"Forwarding non-streaming response from {target_url} to non-streaming client (Full -> Full)")
+                    response_body = await proxy_response.aread()
+                    if prompt_logging_enabled:
+                        response_chunks.append(response_body)
+                    try:
+                        response_json = json.loads(response_body.decode('utf-8'))
+                        if 'system_fingerprint' not in response_json:
+                            response_json['system_fingerprint'] = system_fingerprint
 
-                        # Log the assembled response if prompt logging is enabled (already handled by finally)
-                        return final_response_obj # Return the assembled dict
-
-                    else: # Backend is not streaming, client wants full (ideal case for non-streaming)
-                        logging.debug(f"Forwarding non-streaming response from {target_url} to non-streaming client (Full -> Full)")
-                        response_body = await proxy_response.aread()
-                        if prompt_logging_enabled:
-                            response_chunks.append(response_body)
-                        try:
-                            response_json = json.loads(response_body.decode('utf-8'))
-                            if 'system_fingerprint' not in response_json:
-                                response_json['system_fingerprint'] = system_fingerprint
-
-                            if proxy_response.status_code != 200:
-                                logging.error(f"Error response from {target_url}: {proxy_response.status_code} - {response_json}")
-                                # Return the error JSON directly if status is not 200
-                                return response_json # Or craft a specific error payload
-                            return response_json # Return the Python dict
-                        except json.JSONDecodeError:
-                            logging.warning(f"Could not decode JSON from runner response for non-streaming client: {response_body.decode('utf-8')}")
-                            # For non-streaming, if we can't parse JSON, it's an error.
-                            error_payload = {"error": {"message": "Runner returned non-JSON response.", "type": "runner_error", "details": response_body.decode('utf-8', errors='replace')[:500]}}
-                            return error_payload
-
+                        if proxy_response.status_code != 200:
+                            logging.error(f"Error response from {target_url}: {proxy_response.status_code} - {response_json}")
+                            return response_json
+                        return response_json
+                    except json.JSONDecodeError:
+                        logging.warning(f"Could not decode JSON from runner response for non-streaming client: {response_body.decode('utf-8')}")
+                        return {"error": {"message": "Runner returned non-JSON response.", "type": "runner_error", "details": response_body.decode('utf-8', errors='replace')[:500]}}
 
         except httpx.RequestError as e:
             logging.error(f"Error forwarding request to runner {model_name} on port {port}: {e}\n{traceback.format_exc()}")
             error_payload = {"error": {"message": f"Error communicating with runner for model '{model_name}': {e}", "type": "runner_communication_error"}}
             if prompt_logging_enabled:
                  prompts_logger.error(f"Error response from {target_url} for model '{model_name}': {e}")
-            if stream:
-                yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-            else:
-                return error_payload
+            return error_payload
 
-        except asyncio.TimeoutError as e: # Specific catch for asyncio.TimeoutError, e.g. from client.stream timeout
+        except asyncio.TimeoutError as e:
             logging.error(f"Timeout during request forwarding for {model_name} to {target_url}: {e}\n{traceback.format_exc()}")
             error_payload = {"error": {"message": f"Timeout processing request for model '{model_name}'.", "type": "request_timeout_error"}}
             if prompt_logging_enabled:
                  prompts_logger.error(f"Timeout processing request for model '{model_name}': {e}")
-            if stream:
-                yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-            else:
-                return error_payload
+            return error_payload
 
         except Exception as e:
             logging.error(f"Unexpected error during request forwarding for {model_name}: {e}\n{traceback.format_exc()}")
             error_payload = {"error": {"message": f"Internal error processing request for model '{model_name}': {e}", "type": "internal_error"}}
             if prompt_logging_enabled:
                  prompts_logger.error(f"Unexpected error processing request for model '{model_name}': {e}")
-            if stream:
-                yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
-            else:
-                return error_payload
+            return error_payload
         finally:
-            # Log the complete response if prompt logging is enabled and response_chunks were collected
-            # This logging happens regardless of stream=True/False, as response_chunks are always populated.
             if prompt_logging_enabled and response_chunks:
                  try:
                      full_response_bytes = b''.join(response_chunks)
-                     # Attempt to decode and log as JSON if possible, otherwise log raw bytes
                      try:
                          full_response_json = json.loads(full_response_bytes.decode('utf-8'))
                          prompts_logger.info(f"Response from {target_url} for model '{model_name}': {json.dumps(full_response_json)}")
                      except json.JSONDecodeError:
-                         # If not JSON, log the raw string or a truncated version
                          response_str = full_response_bytes.decode('utf-8', errors='replace')
-                         prompts_logger.info(f"Raw response from {target_url} for model '{model_name}': {response_str[:500]}...") # Log first 500 chars
+                         prompts_logger.info(f"Raw response from {target_url} for model '{model_name}': {response_str[:500]}...")
                  except Exception as log_e:
                      logging.error(f"Error logging response body for {request.url.path}: {log_e}")
 
+# --- End of _fetch_non_streaming_v1_response ---
 
-# --- End handler for /v1/* requests ---
+
+# --- Modified generator for streaming responses ONLY ---
+async def _dynamic_route_v1_request_generator(
+    request: Request,
+    target_path: Optional[str] = None,
+    body: Optional[dict] = None,
+    body_bytes: Optional[bytes] = None
+) -> AsyncGenerator[bytes, None]: # Explicitly an AsyncGenerator
+    """
+    Intercepts /v1/* requests, ensures the target runner is running,
+    and forwards the request to the runner's port, yielding the response chunks.
+    This function ONLY handles streaming responses.
+    """
+    all_models_config = request.app.state.all_models_config
+    runtimes_config = request.app.state.runtimes_config
+    get_runner_port_callback = request.app.state.get_runner_port_callback
+    request_runner_start_callback = request.app.state.request_runner_start_callback
+    prompt_logging_enabled = getattr(request.app.state, 'prompt_logging_enabled', False)
+    prompts_logger = getattr(request.app.state, 'prompts_logger', logging.getLogger())
+    proxy_thread_instance = getattr(request.app.state, 'proxy_thread_instance', None)
+
+    if not isinstance(proxy_thread_instance, FastAPIProxyThread):
+        logging.error("proxy_thread_instance not found or not of type FastAPIProxyThread in app.state")
+        error_payload = {"error": {"message": "Internal server error: Proxy thread not configured.", "type": "internal_error"}}
+        yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+        return
+    proxy_thread: FastAPIProxyThread = proxy_thread_instance
+
+    try:
+        if body is None or body_bytes is None:
+            body_bytes = await request.body()
+            body = {}
+            if body_bytes:
+                try:
+                    body = json.loads(body_bytes)
+                except json.JSONDecodeError:
+                    body = None
+                    logging.warning(f"Could not decode request body as JSON for {request.url.path}")
+                    error_payload = {"error": {"message": "Invalid JSON request body.", "type": "invalid_request_error"}}
+                    yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+                    return
+
+        model_name_from_request = None
+        if isinstance(body, dict):
+            model_name_from_request = body.get("model")
+
+        if not model_name_from_request:
+            logging.warning(f"Model name not found in request body for {request.url.path}")
+            error_payload = {"error": {"message": "Model name not specified in request body.", "type": "invalid_request_error"}}
+            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+            return
+
+        if prompt_logging_enabled:
+            try:
+                prompts_logger.info(f"Request to {request.url.path} for model '{model_name_from_request}': {json.dumps(body)}")
+            except Exception as log_e:
+                logging.error(f"Error logging request body for {request.url.path}: {log_e}")
+
+    except Exception as e:
+        logging.error(f"Error reading request body or extracting model name: {e}\n{traceback.format_exc()}")
+        error_payload = {"error": {"message": f"Invalid request: {e}", "type": "invalid_request_error"}}
+        yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+        return
+
+    id_to_internal_name_mapping = {v: k for k, v in gguf_metadata.get_model_name_to_id_mapping(all_models_config).items()}
+    internal_model_name = id_to_internal_name_mapping.get(model_name_from_request)
+
+    if not internal_model_name:
+        if model_name_from_request in all_models_config:
+            internal_model_name = model_name_from_request
+            logging.warning(f"Request model ID '{model_name_from_request}' matched an internal model name directly.")
+        else:
+            logging.warning(f"Request for unknown model ID: {model_name_from_request}.")
+            error_payload = {"error": {"message": f"Model ID '{model_name_from_request}' not found in configuration mapping.", "type": "invalid_request_error"}}
+            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+            return
+
+    model_config_details = all_models_config.get(internal_model_name)
+    runtime_name_for_model = model_config_details.get("llama_cpp_runtime") if model_config_details else None
+
+    if not runtime_name_for_model:
+        logging.warning(f"Runtime not defined for model '{internal_model_name}'.")
+        error_payload = {"error": {"message": f"Runtime not configured for model '{internal_model_name}'.", "type": "configuration_error"}}
+        yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+        return
+
+    runtime_details_from_config = runtimes_config.get(runtime_name_for_model)
+    if not runtime_details_from_config:
+        logging.warning(f"Configuration for runtime '{runtime_name_for_model}' not found.")
+        error_payload = {"error": {"message": f"Configuration for runtime '{runtime_name_for_model}' not found.", "type": "configuration_error"}}
+        yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+        return
+
+    if body_bytes and body:
+        if runtime_details_from_config.get("supports_tools") is False:
+            if "tools" in body or "tool_choice" in body:
+                body.pop("tools", None)
+                body.pop("tool_choice", None)
+                logging.info(f"Model '{internal_model_name}' has supports_tools=False. Removed 'tools'/'tool_choice'.")
+                body_bytes = json.dumps(body).encode('utf-8')
+
+    model_name = internal_model_name
+    port = get_runner_port_callback(model_name)
+
+    if port is None:
+        logging.info(f"Runner for {model_name} not running. Requesting startup.")
+        startup_timeout = 240
+        try:
+            if model_name not in proxy_thread._runner_ready_futures or proxy_thread._runner_ready_futures[model_name].done():
+                 proxy_thread._runner_ready_futures[model_name] = request_runner_start_callback(model_name)
+
+            port = await asyncio.wait_for(proxy_thread._runner_ready_futures[model_name], timeout=startup_timeout)
+            logging.info(f"Runner for {model_name} is ready on port {port} after startup.")
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout waiting for runner {model_name} to start.")
+            if model_name in proxy_thread._runner_ready_futures and not proxy_thread._runner_ready_futures[model_name].done():
+                 proxy_thread._runner_ready_futures[model_name].cancel()
+                 del proxy_thread._runner_ready_futures[model_name]
+            error_payload = {"error": {"message": f"Timeout starting runner for model '{model_name}'.", "type": "runner_startup_error"}}
+            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+            return
+        except Exception as e:
+            logging.error(f"Error during runner startup for {model_name}: {e}\n{traceback.format_exc()}")
+            if model_name in proxy_thread._runner_ready_futures and not proxy_thread._runner_ready_futures[model_name].done():
+                 proxy_thread._runner_ready_futures[model_name].set_exception(e)
+                 del proxy_thread._runner_ready_futures[model_name]
+            error_payload = {"error": {"message": f"Error starting runner for model '{model_name}': {e}", "type": "runner_startup_error"}}
+            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+            return
+    else:
+        logging.debug(f"Runner for {model_name} is already running on port {port}.")
+        if model_name not in proxy_thread._runner_ready_futures or not proxy_thread._runner_ready_futures[model_name].done():
+             future = asyncio.Future()
+             future.set_result(port)
+             proxy_thread._runner_ready_futures[model_name] = future
+
+    path_to_use = target_path if target_path is not None else request.url.path
+    target_url = f"http://127.0.0.1:{port}{path_to_use}"
+    logging.debug(f"Streaming: Target URL: {target_url}")
+
+    async with httpx.AsyncClient() as client:
+        response_chunks = []
+        try:
+            headers = dict(request.headers)
+            headers.pop('host', None)
+            headers.pop('content-length', None)
+
+            async with client.stream(
+                method=request.method, url=target_url, headers=headers, content=body_bytes, timeout=600.0
+            ) as proxy_response:
+                content_type = proxy_response.headers.get('content-type', '').lower()
+                is_backend_streaming = 'text/event-stream' in content_type
+                config = request.app.state.all_models_config
+                model_config_for_fingerprint = config.get(model_name, {})
+                system_fingerprint = calculate_system_fingerprint(model_config_for_fingerprint)
+
+                if is_backend_streaming:
+                    logging.debug(f"Streaming response from {target_url} to client (SSE -> SSE)")
+                    async for chunk in proxy_response.aiter_bytes():
+                        if prompt_logging_enabled:
+                            response_chunks.append(chunk)
+                        try:
+                            chunk_str = chunk.decode('utf-8').strip()
+                            if chunk_str.startswith('data: '):
+                                json_payload_str = chunk_str[len('data: '):].strip()
+                                if json_payload_str == '[DONE]':
+                                    yield chunk
+                                    continue
+                                try:
+                                    data_json = json.loads(json_payload_str)
+                                    if 'system_fingerprint' not in data_json:
+                                        data_json['system_fingerprint'] = system_fingerprint
+                                        modified_chunk_str = f'data: {json.dumps(data_json)}\n\n'
+                                        yield modified_chunk_str.encode('utf-8')
+                                    else:
+                                        yield chunk
+                                except json.JSONDecodeError:
+                                    logging.warning(f"Could not decode JSON from streaming chunk: {json_payload_str}")
+                                    yield chunk
+                            else:
+                                yield chunk
+                        except Exception as e: # pylint: disable=broad-except
+                            logging.error(f"Error processing streaming chunk: {e}\n{traceback.format_exc()}")
+                            yield chunk
+                else: # Backend is not streaming, but client wants stream
+                    logging.debug(f"Streaming response from {target_url} to client (Full -> SSE)")
+                    response_body = await proxy_response.aread()
+                    if prompt_logging_enabled:
+                        response_chunks.append(response_body)
+                    try:
+                        response_json = json.loads(response_body.decode('utf-8'))
+                        if 'system_fingerprint' not in response_json:
+                            response_json['system_fingerprint'] = system_fingerprint
+                        yield f'data: {json.dumps(response_json)}\n\n'.encode('utf-8')
+                    except json.JSONDecodeError:
+                        logging.warning(f"Could not decode non-streaming backend response as JSON. Yielding raw. Status: {proxy_response.status_code}")
+                        yield f'data: {response_body.decode("utf-8", errors="replace")}\n\n'.encode('utf-8')
+                    yield f'data: [DONE]\n\n'.encode('utf-8')
+
+        except httpx.RequestError as e:
+            logging.error(f"Error forwarding stream to runner {model_name}: {e}\n{traceback.format_exc()}")
+            error_payload = {"error": {"message": f"Error communicating with runner for model '{model_name}': {e}", "type": "runner_communication_error"}}
+            if prompt_logging_enabled:
+                 prompts_logger.error(f"Error response from {target_url} for model '{model_name}': {e}")
+            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+            return
+        except asyncio.TimeoutError as e:
+            logging.error(f"Timeout during stream forwarding for {model_name}: {e}\n{traceback.format_exc()}")
+            error_payload = {"error": {"message": f"Timeout processing stream for model '{model_name}'.", "type": "request_timeout_error"}}
+            if prompt_logging_enabled:
+                 prompts_logger.error(f"Timeout processing stream for model '{model_name}': {e}")
+            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+            return
+        except Exception as e:
+            logging.error(f"Unexpected error during stream forwarding for {model_name}: {e}\n{traceback.format_exc()}")
+            error_payload = {"error": {"message": f"Internal error processing stream for model '{model_name}': {e}", "type": "internal_error"}}
+            if prompt_logging_enabled:
+                 prompts_logger.error(f"Unexpected error processing stream for model '{model_name}': {e}")
+            yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
+            return
+        finally:
+            if prompt_logging_enabled and response_chunks:
+                 try:
+                     full_response_bytes = b''.join(response_chunks)
+                     try:
+                         full_response_json = json.loads(full_response_bytes.decode('utf-8'))
+                         prompts_logger.info(f"Streamed response from {target_url} for model '{model_name}': {json.dumps(full_response_json)}")
+                     except json.JSONDecodeError:
+                         response_str = full_response_bytes.decode('utf-8', errors='replace')
+                         prompts_logger.info(f"Raw streamed response from {target_url} for model '{model_name}': {response_str[:500]}...")
+                 except Exception as log_e:
+                     logging.error(f"Error logging streamed response body for {request.url.path}: {log_e}")
+
+# --- End of _dynamic_route_v1_request_generator ---
 
 
 # --- Handlers for /api/v0/* proxying ---
-# These handlers will call the _dynamic_route_v1_request_generator handler internally
 @app.post("/api/v0/chat/completions")
 async def _proxy_v0_chat_completions(request: Request):
     """Proxies /api/v0/chat/completions to /v1/chat/completions."""
@@ -528,16 +641,14 @@ async def _proxy_v0_chat_completions(request: Request):
                 request,
                 target_path=target_v1_path,
                 body=body_json,
-                body_bytes=body_bytes,
-                stream=True
+                body_bytes=body_bytes
             ))
         else:
-            response_data = await _dynamic_route_v1_request_generator(
+            response_data = await _fetch_non_streaming_v1_response(
                 request,
                 target_path=target_v1_path,
                 body=body_json,
-                body_bytes=body_bytes,
-                stream=False
+                body_bytes=body_bytes
             )
             if isinstance(response_data, dict):
                 if "error" in response_data:
@@ -550,8 +661,9 @@ async def _proxy_v0_chat_completions(request: Request):
                     return JSONResponse(content=response_data, status_code=status_code)
                 return JSONResponse(content=response_data)
             else:
-                logging.error(f"Non-streaming APIv0 request to {target_v1_path} did not return a dict.")
-                return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type from generator.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                # This should ideally not be reached if _fetch_non_streaming_v1_response adheres to its contract
+                logging.error(f"Non-streaming APIv0 request to {target_v1_path} did not return a dict as expected.")
+                return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type from processing function.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     except json.JSONDecodeError:
         return JSONResponse(content={"error": {"message": "Invalid JSON in request body.", "type": "invalid_request_error"}}, status_code=status.HTTP_400_BAD_REQUEST)
@@ -570,13 +682,12 @@ async def _proxy_v0_embeddings(request: Request):
         if body_bytes:
             body_json = json.loads(body_bytes)
 
-        # Embeddings are typically non-streaming, so stream=False is passed.
-        response_data = await _dynamic_route_v1_request_generator(
+        # Embeddings are typically non-streaming.
+        response_data = await _fetch_non_streaming_v1_response(
             request,
             target_path=target_v1_path,
             body=body_json,
-            body_bytes=body_bytes,
-            stream=False # Explicitly False for embeddings
+            body_bytes=body_bytes
         )
         if isinstance(response_data, dict):
             if "error" in response_data:
@@ -589,8 +700,8 @@ async def _proxy_v0_embeddings(request: Request):
                 return JSONResponse(content=response_data, status_code=status_code)
             return JSONResponse(content=response_data)
         else:
-            logging.error(f"Non-streaming APIv0 request to {target_v1_path} did not return a dict.")
-            return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type from generator.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logging.error(f"Non-streaming APIv0 request to {target_v1_path} did not return a dict as expected.")
+            return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type from processing function.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     except json.JSONDecodeError:
         return JSONResponse(content={"error": {"message": "Invalid JSON in request body.", "type": "invalid_request_error"}}, status_code=status.HTTP_400_BAD_REQUEST)
@@ -616,16 +727,14 @@ async def _proxy_v0_completions(request: Request):
                 request,
                 target_path=target_v1_path,
                 body=body_json,
-                body_bytes=body_bytes,
-                stream=True
+                body_bytes=body_bytes
             ))
         else:
-            response_data = await _dynamic_route_v1_request_generator(
+            response_data = await _fetch_non_streaming_v1_response(
                 request,
                 target_path=target_v1_path,
                 body=body_json,
-                body_bytes=body_bytes,
-                stream=False
+                body_bytes=body_bytes
             )
             if isinstance(response_data, dict):
                 if "error" in response_data:
@@ -638,8 +747,8 @@ async def _proxy_v0_completions(request: Request):
                     return JSONResponse(content=response_data, status_code=status_code)
                 return JSONResponse(content=response_data)
             else:
-                logging.error(f"Non-streaming APIv0 request to {target_v1_path} did not return a dict.")
-                return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type from generator.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                logging.error(f"Non-streaming APIv0 request to {target_v1_path} did not return a dict as expected.")
+                return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type from processing function.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     except json.JSONDecodeError:
         return JSONResponse(content={"error": {"message": "Invalid JSON in request body.", "type": "invalid_request_error"}}, status_code=status.HTTP_400_BAD_REQUEST)
@@ -718,24 +827,22 @@ for route in app.routes:
 async def _v1_chat_completions_handler(request: Request):
     try:
         body_bytes = await request.body()
-        body_json = {} # Renamed to avoid confusion with 'body' parameter of generator
+        body_json = {}
         if body_bytes:
             body_json = json.loads(body_bytes)
 
-        # Determine if streaming is requested by the client
-        # OpenAI API uses 'stream: true' in the JSON body for this.
         client_requests_stream = body_json.get("stream", False)
 
         if client_requests_stream:
-            # Pass stream=True to the generator
-            return StreamingResponse(content=_dynamic_route_v1_request_generator(request, body=body_json, body_bytes=body_bytes, stream=True))
+            return StreamingResponse(content=_dynamic_route_v1_request_generator(
+                request, body=body_json, body_bytes=body_bytes
+            ))
         else:
-            # Pass stream=False and expect a dict response
-            response_data = await _dynamic_route_v1_request_generator(request, body=body_json, body_bytes=body_bytes, stream=False)
+            response_data = await _fetch_non_streaming_v1_response(
+                request, body=body_json, body_bytes=body_bytes
+            )
             if isinstance(response_data, dict):
-                # If it's an error payload from early exit or a successful full response
                 if "error" in response_data:
-                    # Determine appropriate status code, e.g., 400 for bad request, 500 for server errors
                     error_type = response_data.get("error", {}).get("type", "unknown_error")
                     status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
                     if error_type == "invalid_request_error":
@@ -745,9 +852,8 @@ async def _v1_chat_completions_handler(request: Request):
                     return JSONResponse(content=response_data, status_code=status_code)
                 return JSONResponse(content=response_data)
             else:
-                # Should not happen if generator adheres to contract (yields bytes or returns dict)
-                logging.error("Non-streaming request did not return a dict from generator.")
-                return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type from generator.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                logging.error("Non-streaming /v1/chat/completions request did not return a dict as expected.")
+                return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     except json.JSONDecodeError:
         return JSONResponse(content={"error": {"message": "Invalid JSON in request body.", "type": "invalid_request_error"}}, status_code=status.HTTP_400_BAD_REQUEST)
@@ -758,7 +864,6 @@ async def _v1_chat_completions_handler(request: Request):
 
 @app.post("/v1/completions")
 async def _v1_completions_handler(request: Request):
-    # This endpoint typically also supports 'stream' parameter like chat completions.
     try:
         body_bytes = await request.body()
         body_json = {}
@@ -768,19 +873,25 @@ async def _v1_completions_handler(request: Request):
         client_requests_stream = body_json.get("stream", False)
 
         if client_requests_stream:
-            return StreamingResponse(content=_dynamic_route_v1_request_generator(request, body=body_json, body_bytes=body_bytes, stream=True))
+            return StreamingResponse(content=_dynamic_route_v1_request_generator(
+                request, body=body_json, body_bytes=body_bytes
+            ))
         else:
-            response_data = await _dynamic_route_v1_request_generator(request, body=body_json, body_bytes=body_bytes, stream=False)
+            response_data = await _fetch_non_streaming_v1_response(
+                request, body=body_json, body_bytes=body_bytes
+            )
             if isinstance(response_data, dict):
                 if "error" in response_data:
                     error_type = response_data.get("error", {}).get("type", "unknown_error")
                     status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-                    if error_type == "invalid_request_error": status_code = status.HTTP_400_BAD_REQUEST
-                    elif error_type == "runner_startup_error" or error_type == "runner_communication_error": status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+                    if error_type == "invalid_request_error":
+                        status_code = status.HTTP_400_BAD_REQUEST
+                    elif error_type == "runner_startup_error" or error_type == "runner_communication_error":
+                        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
                     return JSONResponse(content=response_data, status_code=status_code)
                 return JSONResponse(content=response_data)
             else:
-                logging.error("Non-streaming /v1/completions request did not return a dict.")
+                logging.error("Non-streaming /v1/completions request did not return a dict as expected.")
                 return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     except json.JSONDecodeError:
         return JSONResponse(content={"error": {"message": "Invalid JSON in request body.", "type": "invalid_request_error"}}, status_code=status.HTTP_400_BAD_REQUEST)
@@ -791,25 +902,25 @@ async def _v1_completions_handler(request: Request):
 
 @app.post("/v1/embeddings")
 async def _v1_embeddings_handler(request: Request):
-    # Embeddings are typically non-streaming.
-    # The _dynamic_route_v1_request_generator will handle stream=False by default if not passed,
-    # but we explicitly pass stream=False as embeddings are not expected to stream.
     try:
         body_bytes = await request.body()
         body_json = {}
         if body_bytes:
             body_json = json.loads(body_bytes)
 
-        # Embeddings are generally not streamed, so call with stream=False.
-        # If a backend tried to stream an embedding, it would be collected and returned as one object.
-        response_data = await _dynamic_route_v1_request_generator(request, body=body_json, body_bytes=body_bytes, stream=False)
+        # Embeddings are non-streaming.
+        response_data = await _fetch_non_streaming_v1_response(
+            request, body=body_json, body_bytes=body_bytes
+        )
 
         if isinstance(response_data, dict):
             if "error" in response_data:
                 error_type = response_data.get("error", {}).get("type", "unknown_error")
                 status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-                if error_type == "invalid_request_error": status_code = status.HTTP_400_BAD_REQUEST
-                elif error_type == "runner_startup_error" or error_type == "runner_communication_error": status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+                if error_type == "invalid_request_error":
+                    status_code = status.HTTP_400_BAD_REQUEST
+                elif error_type == "runner_startup_error" or error_type == "runner_communication_error":
+                    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
                 return JSONResponse(content=response_data, status_code=status_code)
             return JSONResponse(content=response_data)
         else:
