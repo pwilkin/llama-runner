@@ -32,6 +32,7 @@ def generateRequestFromOllama(ollama_req: dict) -> dict:
     return {
         "model": ollama_req.get("model"),
         "prompt": ollama_req.get("prompt"),
+        "tools": ollama_req.get("tools"),
         "temperature": opts.get("temperature", 1.0),
         "max_tokens": opts.get("max_tokens")
     }
@@ -71,6 +72,7 @@ def chatRequestFromOllama(ollama_req: dict) -> dict:
     return {
         "model": ollama_req.get("model"),
         "messages": ollama_req.get("messages", []),
+        "tools": ollama_req.get("tools"),
         "temperature": opts.get("temperature", 1.0),
         "max_tokens": opts.get("max_tokens")
     }
