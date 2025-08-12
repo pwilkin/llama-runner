@@ -1,7 +1,7 @@
 import logging
 from typing import Optional, Dict, Any
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QSizePolicy
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
 from PySide6.QtCore import Qt
 
 def human_readable_size(size_in_bytes: Optional[int]) -> str:
@@ -27,7 +27,7 @@ class ModelStatusWidget(QWidget):
         super().__init__(parent)
         self.model_name = model_name
         self.metadata = metadata
-        self.layout = QVBoxLayout()
+        self.main_layout = QVBoxLayout()
 
         # Metadata section
         self.metadata_layout = QVBoxLayout()
@@ -43,28 +43,28 @@ class ModelStatusWidget(QWidget):
         self.size_label = QLabel("Size: N/A")
         self.metadata_layout.addWidget(self.size_label)
 
-        self.layout.addLayout(self.metadata_layout) # Add metadata layout to main widget layout
+        self.main_layout.addLayout(self.metadata_layout) # Add metadata layout to main widget layout
 
         self.model_label = QLabel(f"<b>{self.model_name}</b>")
-        self.model_label.setAlignment(Qt.AlignCenter)
+        self.model_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.model_label.setStyleSheet("font-size: 16pt;") # Larger font for model name
-        self.layout.addWidget(self.model_label)
+        self.main_layout.addWidget(self.model_label)
 
         self.status_label = QLabel("Status: Not Running")
-        self.layout.addWidget(self.status_label)
+        self.main_layout.addWidget(self.status_label)
 
         self.port_label = QLabel("Port: N/A")
-        self.layout.addWidget(self.port_label)
+        self.main_layout.addWidget(self.port_label)
 
         self.start_button = QPushButton(f"Start {self.model_name}")
-        self.layout.addWidget(self.start_button)
+        self.main_layout.addWidget(self.start_button)
 
         self.stop_button = QPushButton(f"Stop {self.model_name}")
         self.stop_button.setEnabled(False) # Initially disabled
-        self.layout.addWidget(self.stop_button)
+        self.main_layout.addWidget(self.stop_button)
 
-        self.layout.addStretch() # Push everything to the top
-        self.setLayout(self.layout)
+        self.main_layout.addStretch() # Push everything to the top
+        self.setLayout(self.main_layout)
         # Apply styling to the ModelStatusWidget and its children
         self.setStyleSheet("""
             ModelStatusWidget {
@@ -114,10 +114,33 @@ class ModelStatusWidget(QWidget):
             try:
                 size_bytes_int = int(size_bytes)
                 self.size_label.setText(f"Size: {human_readable_size(size_bytes_int)}")
-            except (ValueError, TypeError):
-                # Fallback if conversion fails (should ideally not happen if gguf_metadata is fixed)
-                logging.warning(f"Could not convert size metadata '{size_bytes}' to integer. Displaying raw value.")
-                self.size_label.setText(f"Size: {size_bytes}") # Display raw value if conversion fails
+            except (ValueError, TypeError) as e:
+                # Log detailed information about the conversion failure
+                actual_type = type(size_bytes).__name__
+                logging.warning(f"Size conversion failed for value '{size_bytes}' (type: {actual_type}): {str(e)}")
+                # Try to clean the value by removing non-digit characters except decimal point
+                if isinstance(size_bytes, str):
+                    cleaned = ''.join(filter(lambda x: x.isdigit() or x == '.', size_bytes))
+                    if cleaned and cleaned != '.':
+                        try:
+                            size_bytes_float = float(cleaned)
+                            # Convert to bytes if the value has a unit (assuming it's in GB)
+                            if 'gb' in size_bytes.lower():
+                                size_bytes_int = int(size_bytes_float * (1024 ** 3))
+                            elif 'mb' in size_bytes.lower():
+                                size_bytes_int = int(size_bytes_float * (1024 ** 2))
+                            elif 'kb' in size_bytes.lower():
+                                size_bytes_int = int(size_bytes_float * 1024)
+                            else:
+                                size_bytes_int = int(size_bytes_float)
+                            
+                            self.size_label.setText(f"Size: {human_readable_size(size_bytes_int)}")
+                            return
+                        except (ValueError, TypeError):
+                            pass  # Fall through to raw value display
+                
+                # Final fallback: display raw value
+                self.size_label.setText(f"Size: {size_bytes}")
         else:
             self.size_label.setText("Size: N/A")
 

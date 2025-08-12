@@ -97,7 +97,7 @@ async def _fetch_non_streaming_v1_response(
     target_path: Optional[str] = None,
     body: Optional[dict] = None,
     body_bytes: Optional[bytes] = None
-) -> Dict[str, Any]:
+) -> Dict[str, Any] | list[Any]:
     """
     Handles non-streaming /v1/* requests. It ensures the target runner is running,
     forwards the request, and returns the complete response as a dictionary.
@@ -330,7 +330,7 @@ async def _fetch_non_streaming_v1_response(
                         final_response_obj["choices"].append(current_choice)
 
                     if 'system_fingerprint' not in final_response_obj:
-                         final_response_obj['system_fingerprint'] = system_fingerprint
+                        final_response_obj['system_fingerprint'] = system_fingerprint
 
                     return final_response_obj
                 else: # Backend is not streaming, client wants full (ideal case for non-streaming)
@@ -340,7 +340,7 @@ async def _fetch_non_streaming_v1_response(
                         response_chunks.append(response_body)
                     try:
                         response_json = json.loads(response_body.decode('utf-8'))
-                        if 'system_fingerprint' not in response_json:
+                        if (not isinstance(response_json, list)) and 'system_fingerprint' not in response_json:
                             response_json['system_fingerprint'] = system_fingerprint
 
                         if proxy_response.status_code != 200:
@@ -677,7 +677,7 @@ async def _proxy_v0_embeddings(request: Request):
     """Proxies /api/v0/embeddings to /v1/embeddings. Embeddings are non-streaming."""
     # logging.debug(f"Proxying /api/v0/embeddings to /v1/embeddings") # F541
     logging.debug("Proxying /api/v0/embeddings to /v1/embeddings")
-    target_v1_path = "/v1/embeddings"
+    target_v1_path = "/embeddings"
     try:
         body_bytes = await request.body()
         body_json = {}
@@ -913,7 +913,9 @@ async def _v1_embeddings_handler(request: Request):
 
         # Embeddings are non-streaming.
         response_data = await _fetch_non_streaming_v1_response(
-            request, body=body_json, body_bytes=body_bytes
+            request, 
+            body=body_json, 
+            body_bytes=body_bytes,
         )
 
         if isinstance(response_data, dict):
@@ -926,9 +928,45 @@ async def _v1_embeddings_handler(request: Request):
                     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
                 return JSONResponse(content=response_data, status_code=status_code)
             return JSONResponse(content=response_data)
+        elif isinstance(response_data, list):
+            # If the response is a list, we expect it to be in the LM Studio format
+            embedding_obj = response_data[0]
+            if isinstance(embedding_obj, dict):
+                # Check if it has the expected structure for embeddings
+                if 'embedding' in embedding_obj:
+                    embedding_arr = embedding_obj.get('embedding')
+                    if isinstance(embedding_arr, list) and len(embedding_arr) > 0:
+                        # Create one embedding object per vector in the array
+                        embedding_objects = [
+                            {
+                                "object": "embedding",
+                                "embedding": vector,
+                            }
+                            for vector in embedding_arr
+                        ]
+                        
+                        obj_resp = {
+                            "object": "list",
+                            "data": embedding_objects,
+                            "model": body_json.get("model", "unknown_model"),
+                            "usage": {
+                                "prompt_tokens": 0,
+                                "total_tokens": 0
+                            }
+                        }
+                        return JSONResponse(content=obj_resp)
+                    else:
+                        logging.error("Non-streaming /v1/embeddings request returned an invalid embedding array: " + str(embedding_arr))
+                        return JSONResponse(content={"error": {"message": "Invalid embedding data format.", "type": "invalid_request_error"}}, status_code=status.HTTP_400_BAD_REQUEST)
+                else:
+                    logging.error("Non-streaming /v1/embeddings request returned an invalid object structure: " + str(embedding_obj))
+                    return JSONResponse(content={"error": {"message": "Invalid response structure for embeddings.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            else:
+                logging.error("Non-streaming /v1/embeddings request returned a list with non-dict items: " + str(response_data))
+                return JSONResponse(content={"error": {"message": "Invalid response type for embeddings.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
         else:
             # This case should ideally not be reached if the generator works as expected.
-            logging.error("Non-streaming /v1/embeddings request did not return a dict.")
+            logging.error("Non-streaming /v1/embeddings request did not return a dict: " + str(response_data) + " of type " + str(type(response_data)))
             return JSONResponse(content={"error": {"message": "Internal server error: Invalid response type from generator for embeddings.", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     except json.JSONDecodeError:
         return JSONResponse(content={"error": {"message": "Invalid JSON in request body.", "type": "invalid_request_error"}}, status_code=status.HTTP_400_BAD_REQUEST)

@@ -1,14 +1,12 @@
-import asyncio
 import os
 import sys
 import subprocess
 import logging
-import traceback
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                               QPushButton, QListWidget, QStackedWidget, QSizePolicy)
-from PySide6.QtCore import Signal, Slot, Qt, QTimer, QCoreApplication, QEvent
+                               QPushButton, QListWidget, QStackedWidget)
+from PySide6.QtCore import Slot, Qt, QTimer, QEvent
 
 from llama_runner.config_loader import load_config
 from llama_runner.lmstudio_proxy_thread import FastAPIProxyThread
@@ -16,7 +14,7 @@ from llama_runner.ollama_proxy_thread import OllamaProxyThread
 from llama_runner import gguf_metadata
 
 from llama_runner.model_status_widget import ModelStatusWidget
-from llama_runner.llama_runner_manager import LlamaRunnerManager, RunnerErrorEvent, RunnerStoppedEvent # Import events if MainWindow were to handle them directly
+from llama_runner.llama_runner_manager import LlamaRunnerManager # Import events if MainWindow were to handle them directly
 
 
 class MainWindow(QWidget):
@@ -349,17 +347,7 @@ class MainWindow(QWidget):
                 logging.debug(f"MainWindow received MANAGER_PARENT_NOTIFICATION_EVENT for {model_name}")
                 self.llama_runner_manager.on_llama_runner_stopped(model_name)
             else:
-                logging.warning(f"MainWindow received MANAGER_PARENT_NOTIFICATION_EVENT without model_name or llama_runner_manager not found.")
-
-        # The LlamaRunnerThread now posts RunnerErrorEvent and RunnerStoppedEvent to LlamaRunnerManager.
-        # LlamaRunnerManager handles these and updates UI or emits its own signals.
-        # MainWindow should not need to handle QEvent.User + 1, +2, +3 from LlamaRunnerThread directly anymore.
-        # If MainWindow needs to react to these, it should connect to signals from LlamaRunnerManager.
-
-        # Example if MainWindow needed to handle RunnerErrorEvent directly (not the current pattern):
-        # elif event.type() == RunnerErrorEvent.EVENT_TYPE:
-        #     if isinstance(event, RunnerErrorEvent) and hasattr(self, "llama_runner_manager"):
-        #         self.llama_runner_manager.on_llama_runner_error(event.model_name, event.message, event.output_buffer)
+                logging.warning("MainWindow received MANAGER_PARENT_NOTIFICATION_EVENT without model_name or llama_runner_manager not found.")
 
         else:
             super().customEvent(event)
