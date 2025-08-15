@@ -147,12 +147,30 @@ class LlamaRunnerManager(QObject):
 
     def request_runner_start(self, model_name: str, iswhisper: bool = False) -> asyncio.Future:
         logging.info(f"Received request to start runner for model: {model_name}")
+            
+        # Подсчёт запущенных раннеров (llama + whisper)
+        running_llama = sum(1 for thread in self.llama_runner_threads.values() if thread.isRunning())
+        running_whisper = len(self.whisper_servers)
+        total_running = running_llama + running_whisper
+
+        if total_running >= self.concurrent_runners_limit:
+            if self.concurrent_runners_limit == 1:
+                # При лимите 1 останавливаем все, чтобы запустить новый
+                self.stop_all_llama_runners()
+                self.stop_all_whisper_servers()
+            else:
+                future = asyncio.Future()
+                future.set_exception(RuntimeError(
+                    f"Concurrent runner limit ({self.concurrent_runners_limit}) reached. Cannot start '{model_name}'."))
+                self._runner_startup_futures[model_name] = future
+                QTimer.singleShot(1000, lambda: self._cleanup_completed_future(model_name))
+                return future
+
         if iswhisper:
             if self.is_whisper_runner_running(model_name):
                 logging.info(f"Runner for {model_name} is already starting. Returning existing Future.")
                 return self._runner_startup_futures[model_name]
-            
-            self.stop_all_whisper_servers()
+
             self.start_whisper_server(model_name)
             future = asyncio.Future()
             future.set_result(self.get_whisper_port(model_name))
@@ -178,26 +196,6 @@ class LlamaRunnerManager(QObject):
                 logging.error(f"Runner for {model_name} is reported as running but port is None.")
                 future = asyncio.Future()
                 future.set_exception(RuntimeError(f"Runner for {model_name} is running but port is unavailable."))
-                self._runner_startup_futures[model_name] = future
-                QTimer.singleShot(1000, lambda: self._cleanup_completed_future(model_name))
-                return future
-
-        running_runners = {name: thread for name, thread in self.llama_runner_threads.items() if thread.isRunning()}
-        num_running = len(running_runners)
-
-        if num_running >= self.concurrent_runners_limit:
-            if self.concurrent_runners_limit == 1:
-                models_to_stop = list(running_runners.keys())
-                if models_to_stop:
-                    logging.info(f"Concurrent runner limit ({self.concurrent_runners_limit}) reached. Stopping existing runner(s): {models_to_stop} before starting {model_name}.")
-                    for name_to_stop in models_to_stop:
-                        self.stop_llama_runner(name_to_stop)
-                else:
-                    logging.warning("Concurrent runner limit reached but no running runners found?")
-            else:
-                logging.warning(f"Concurrent runner limit ({self.concurrent_runners_limit}) reached. Cannot start {model_name}.")
-                future = asyncio.Future()
-                future.set_exception(RuntimeError(f"Concurrent runner limit ({self.concurrent_runners_limit}) reached. Cannot start '{model_name}'."))
                 self._runner_startup_futures[model_name] = future
                 QTimer.singleShot(1000, lambda: self._cleanup_completed_future(model_name))
                 return future
