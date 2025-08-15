@@ -57,7 +57,13 @@ class WhisperServer:
             self.cmd.extend(['--host', default_host])
         if '--port' not in self.cmd:
             self.cmd.extend(['--port', default_port])
-
+            
+        # Remove '' in self.cmd if exists
+        for i in range(len(self.cmd)):
+            if self.cmd[i] == '':
+                self.cmd.pop(i)
+        
+        
         # Extract host and port from the command list
         def get_cmd_param(cmd_list, param_name, default):
             try:

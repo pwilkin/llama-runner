@@ -3,22 +3,28 @@ import os
 import logging
 from typing import Optional, Dict, Any
 
+
 from PySide6.QtCore import QObject, QTimer, QCoreApplication, QEvent, Signal, Slot
+
 
 # Import the custom event classes
 from llama_runner.llama_runner_thread import LlamaRunnerThread, RunnerStoppedEvent, RunnerErrorEvent
 from llama_runner.error_output_dialog import ErrorOutputDialog
 
+
 from llama_runner.whisper_cpp_runner import WhisperServer
+
 
 class LlamaRunnerManager(QObject):
     # Define a custom event type for events posted to the parent (e.g., MainWindow)
     # This replaces the QEvent.User + 4 magic number.
     MANAGER_PARENT_NOTIFICATION_EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
 
+
     # Define signals directly as class attributes
     runner_port_ready_for_proxy = Signal(str, int)
     runner_stopped_for_proxy = Signal(str)
+
 
     def __init__(
         self,
@@ -40,6 +46,7 @@ class LlamaRunnerManager(QObject):
         # self.runner_port_ready_for_proxy = runner_port_ready_for_proxy # Removed, now class attribute
         # self.runner_stopped_for_proxy = runner_stopped_for_proxy # Removed, now class attribute
 
+
         self.llama_runner_threads: Dict[str, LlamaRunnerThread] = {}
         self._runner_startup_futures: Dict[str, asyncio.Future] = {}
         self._current_running_model: Optional[str] = None
@@ -51,7 +58,7 @@ class LlamaRunnerManager(QObject):
     
     def start_whisper_server(self, model_name: str) -> None:
         """
-        Создать и запустить whisper сервер для модели.
+        Create and start a whisper server for the model.
         """
         if model_name in self.whisper_servers:
             logging.info(f"WhisperServer already started for model {model_name}")
@@ -64,10 +71,12 @@ class LlamaRunnerManager(QObject):
                 status_widget.update_port("N/A")
                 status_widget.set_buttons_enabled(False, False)
 
+
             whisper_server = WhisperServer(self.audio_config, model_name)
             whisper_server.start_server()
             self.whisper_servers[model_name] = whisper_server
             port = whisper_server.get_port()
+
 
             logging.info(f"Whisper Runner started for model {model_name}")
             
@@ -82,9 +91,10 @@ class LlamaRunnerManager(QObject):
             logging.error(f"Failed to start WhisperServer for {model_name}: {e}")
 
 
+
     def stop_whisper_server(self, model_name: str) -> None:
         """
-        Остановить whisper сервер для модели.
+        Stop the whisper server for the model.
         """
         whisper_server = self.whisper_servers.get(model_name)
         if whisper_server:
@@ -107,9 +117,10 @@ class LlamaRunnerManager(QObject):
             logging.warning(f"WhisperServer for {model_name} not running")
 
 
+
     def stop_all_whisper_servers(self) -> None:
         """
-        Остановить все запущенные whisper сервера.
+        Stop all running whisper servers.
         """
         for model_name in list(self.whisper_servers.keys()):
             self.stop_whisper_server(model_name)
@@ -130,8 +141,10 @@ class LlamaRunnerManager(QObject):
 
 
 
+
     def set_concurrent_runners_limit(self, limit: int):
         self.concurrent_runners_limit = limit
+
 
     def is_llama_runner_running(self, model_name: str) -> bool:
         thread = self.llama_runner_threads.get(model_name)
@@ -139,23 +152,26 @@ class LlamaRunnerManager(QObject):
             return True
         return False
 
+
     def get_runner_port(self, model_name: str) -> Optional[int]:
         thread = self.llama_runner_threads.get(model_name)
         if thread and thread.isRunning() and thread.runner and thread.runner.is_running():
             return thread.runner.get_port()
         return None
 
+
     def request_runner_start(self, model_name: str, iswhisper: bool = False) -> asyncio.Future:
         logging.info(f"Received request to start runner for model: {model_name}")
             
-        # Подсчёт запущенных раннеров (llama + whisper)
+        # Count running runners (llama + whisper)
         running_llama = sum(1 for thread in self.llama_runner_threads.values() if thread.isRunning())
         running_whisper = len(self.whisper_servers)
         total_running = running_llama + running_whisper
 
+
         if total_running >= self.concurrent_runners_limit:
             if self.concurrent_runners_limit == 1:
-                # При лимите 1 останавливаем все, чтобы запустить новый
+                # With limit 1, stop all to start new one
                 self.stop_all_llama_runners()
                 self.stop_all_whisper_servers()
             else:
@@ -166,10 +182,12 @@ class LlamaRunnerManager(QObject):
                 QTimer.singleShot(1000, lambda: self._cleanup_completed_future(model_name))
                 return future
 
+
         if iswhisper:
             if self.is_whisper_runner_running(model_name):
                 logging.info(f"Runner for {model_name} is already starting. Returning existing Future.")
                 return self._runner_startup_futures[model_name]
+
 
             self.start_whisper_server(model_name)
             future = asyncio.Future()
@@ -179,9 +197,11 @@ class LlamaRunnerManager(QObject):
             return future
 
 
+
         if model_name in self._runner_startup_futures and not self._runner_startup_futures[model_name].done():
             logging.info(f"Runner for {model_name} is already starting. Returning existing Future.")
             return self._runner_startup_futures[model_name]
+
 
         if self.is_llama_runner_running(model_name):
             port = self.get_runner_port(model_name)
@@ -200,13 +220,16 @@ class LlamaRunnerManager(QObject):
                 QTimer.singleShot(1000, lambda: self._cleanup_completed_future(model_name))
                 return future
 
+
         future = asyncio.Future()
         self._runner_startup_futures[model_name] = future
+
 
         model_config = self.models[model_name]
         model_path = model_config.get("model_path")
         llama_cpp_runtime_key = model_config.get("llama_cpp_runtime", "default")
         _raw_llama_cpp_runtime_config = self.llama_runtimes.get(llama_cpp_runtime_key, self.default_runtime)
+
 
         if isinstance(_raw_llama_cpp_runtime_config, dict):
             llama_cpp_runtime_command = _raw_llama_cpp_runtime_config.get("runtime")
@@ -221,20 +244,24 @@ class LlamaRunnerManager(QObject):
             future.set_exception(RuntimeError(f"Invalid runtime configuration type for '{llama_cpp_runtime_key}'."))
             return future
 
+
         if not model_path:
             logging.error(f"Configuration Error: Model '{model_name}' has no 'model_path' specified in config.json.")
             future.set_exception(RuntimeError(f"Configuration Error: Model '{model_name}' has no 'model_path'."))
             return future
+
 
         if not os.path.exists(model_path):
             logging.error(f"File Not Found: Model file not found: {model_path}")
             future.set_exception(FileNotFoundError(f"Model file not found: {model_path}"))
             return future
 
+
         if llama_cpp_runtime_key != "default" and not os.path.exists(llama_cpp_runtime_command):
             logging.error(f"Runtime Not Found: Llama.cpp runtime not found: {llama_cpp_runtime_command}")
             future.set_exception(FileNotFoundError(f"Llama.cpp runtime not found: {llama_cpp_runtime_command}"))
             return future
+
 
         print(f"Starting Llama Runner for {model_name}...")
         status_widget = self.model_status_widgets.get(model_name)
@@ -242,6 +269,7 @@ class LlamaRunnerManager(QObject):
             status_widget.update_status("Starting...")
             status_widget.update_port("N/A")
             status_widget.set_buttons_enabled(False, False)
+
 
         thread = LlamaRunnerThread(
             model_name=model_name,
@@ -255,15 +283,19 @@ class LlamaRunnerManager(QObject):
         thread.error.connect(lambda message, output_buffer, name=model_name: self.on_llama_runner_error(name, message, output_buffer))
         # thread.stopped.connect(lambda name=model_name: self.on_llama_runner_stopped(name))  # Removed, now handled by customEvent
 
+
         self.llama_runner_threads[model_name] = thread
         thread.start()
 
+
         return future
+
 
     def _cleanup_completed_future(self, model_name: str):
         if model_name in self._runner_startup_futures and not self._runner_startup_futures[model_name].done():
             logging.debug(f"Cleaning up completed future for {model_name}")
             del self._runner_startup_futures[model_name]
+
 
     def stop_llama_runner(self, model_name: str):
         if model_name in self.llama_runner_threads and self.llama_runner_threads[model_name].isRunning():
@@ -287,6 +319,7 @@ class LlamaRunnerManager(QObject):
                 # Or, if an event is preferred for the manager itself:
                 # QCoreApplication.instance().postEvent(self, RunnerStoppedEvent(model_name))
 
+
                 # Original logic: post a generic event to parent.
                 # This might be for a different purpose than the thread's stopped event.
                 parent_event = QEvent(LlamaRunnerManager.MANAGER_PARENT_NOTIFICATION_EVENT_TYPE)
@@ -299,6 +332,7 @@ class LlamaRunnerManager(QObject):
                     logging.warning(f"Could not post parent event for {model_name} (stop non-running): App/Parent None.")
             else: # If thread object doesn't even exist, call stop handler directly for cleanup
                 self.on_llama_runner_stopped(model_name)
+
 
 
     def stop_all_llama_runners(self):
@@ -315,12 +349,14 @@ class LlamaRunnerManager(QObject):
         for model_name, thread in running_threads:
             thread.wait()
 
+
     @Slot(str)
     def on_llama_runner_started(self, model_name: str):
         status_widget = self.model_status_widgets.get(model_name)
         if status_widget:
             status_widget.update_status("Starting...")
             status_widget.set_buttons_enabled(False, False)
+
 
     @Slot(str)
     def on_llama_runner_stopped(self, model_name: str):
@@ -343,6 +379,7 @@ class LlamaRunnerManager(QObject):
         else:
             logging.warning(f"Stopped signal received for unknown or already cleaned up model: {model_name}")
 
+
     @Slot(str, str, list)
     def on_llama_runner_error(self, model_name: str, message: str, output_buffer: list):
         print(f"Llama Runner for {model_name} error: {message}")
@@ -361,6 +398,7 @@ class LlamaRunnerManager(QObject):
             logging.debug(f"Runner {model_name} errored while startup Future was pending.")
             self._runner_startup_futures[model_name].set_exception(RuntimeError(f"Runner for {model_name} errored during startup: {message}"))
 
+
     def customEvent(self, event: QEvent):
         # Handle custom stopped event from LlamaRunnerThread
         if event.type() == RunnerStoppedEvent.EVENT_TYPE:
@@ -375,6 +413,7 @@ class LlamaRunnerManager(QObject):
                 logging.warning(f"Received RunnerErrorEvent.EVENT_TYPE but event is not RunnerErrorEvent instance: {type(event)}")
         else:
             super().customEvent(event)
+
 
     @Slot(str, int)
     def on_llama_runner_port_ready_and_emit(self, model_name: str, port: int):
@@ -395,6 +434,7 @@ class LlamaRunnerManager(QObject):
         logging.info(f"Set current running model: {model_name}")
         self.runner_port_ready_for_proxy.emit(model_name, port)
 
+
     @Slot()
     def check_runner_statuses(self):
         for model_name, thread in list(self.llama_runner_threads.items()):
@@ -411,4 +451,3 @@ class LlamaRunnerManager(QObject):
                         app_instance.postEvent(parent_object, parent_event)
                     else:
                         logging.warning(f"Could not post parent event for {model_name} (check_runner_statuses): App/Parent None.")
-        
