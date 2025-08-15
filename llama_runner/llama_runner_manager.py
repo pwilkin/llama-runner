@@ -9,6 +9,8 @@ from PySide6.QtCore import QObject, QTimer, QCoreApplication, QEvent, Signal, Sl
 from llama_runner.llama_runner_thread import LlamaRunnerThread, RunnerStoppedEvent, RunnerErrorEvent
 from llama_runner.error_output_dialog import ErrorOutputDialog
 
+from llama_runner.whisper_cpp_runner import WhisperServer
+
 class LlamaRunnerManager(QObject):
     # Define a custom event type for events posted to the parent (e.g., MainWindow)
     # This replaces the QEvent.User + 4 magic number.
@@ -23,6 +25,7 @@ class LlamaRunnerManager(QObject):
         models: dict,
         llama_runtimes: dict,
         default_runtime: str,
+        audio_config,
         model_status_widgets: dict,
         # runner_port_ready_for_proxy and runner_stopped_for_proxy are now class attributes
         parent=None,
@@ -41,6 +44,91 @@ class LlamaRunnerManager(QObject):
         self._runner_startup_futures: Dict[str, asyncio.Future] = {}
         self._current_running_model: Optional[str] = None
         self.concurrent_runners_limit = 1  # Will be set by MainWindow after instantiation
+        self.audio_config = audio_config
+        self.whisper_servers: Dict[str, WhisperServer] = {}
+    
+    
+    
+    def start_whisper_server(self, model_name: str) -> None:
+        """
+        Создать и запустить whisper сервер для модели.
+        """
+        if model_name in self.whisper_servers:
+            logging.info(f"WhisperServer already started for model {model_name}")
+            return
+        try:
+            print(f"Starting Runner for {model_name}...")
+            status_widget = self.model_status_widgets.get(model_name)
+            if status_widget:
+                status_widget.update_status("Starting...")
+                status_widget.update_port("N/A")
+                status_widget.set_buttons_enabled(False, False)
+
+            whisper_server = WhisperServer(self.audio_config, model_name)
+            whisper_server.start_server()
+            self.whisper_servers[model_name] = whisper_server
+            port = whisper_server.get_port()
+
+            logging.info(f"Whisper Runner started for model {model_name}")
+            
+            print(f"Whisper Runner for {model_name} ready on port {port}.")
+            status_widget = self.model_status_widgets.get(model_name)
+            if status_widget:
+                status_widget.update_port(port)
+                status_widget.update_status("Running")
+                status_widget.set_buttons_enabled(False, True)
+            
+        except Exception as e:
+            logging.error(f"Failed to start WhisperServer for {model_name}: {e}")
+
+
+    def stop_whisper_server(self, model_name: str) -> None:
+        """
+        Остановить whisper сервер для модели.
+        """
+        whisper_server = self.whisper_servers.get(model_name)
+        if whisper_server:
+            try:
+                status_widget = self.model_status_widgets.get(model_name)
+                if status_widget:
+                    status_widget.update_status("Stopping...")
+                    status_widget.set_buttons_enabled(False, False)
+                print(f"Stopping Runner for {model_name}...")
+                whisper_server.stop_server()
+                del self.whisper_servers[model_name]
+                if status_widget:
+                    status_widget.update_status("Not Running")
+                    status_widget.update_port("N/A")
+                    status_widget.set_buttons_enabled(True, False)
+                logging.info(f"WhisperServer stopped for model {model_name}")
+            except Exception as e:
+                logging.error(f"Error stopping WhisperServer for {model_name}: {e}")
+        else:
+            logging.warning(f"WhisperServer for {model_name} not running")
+
+
+    def stop_all_whisper_servers(self) -> None:
+        """
+        Остановить все запущенные whisper сервера.
+        """
+        for model_name in list(self.whisper_servers.keys()):
+            self.stop_whisper_server(model_name)
+    
+    
+    def is_whisper_runner_running(self, model_name: str) -> bool:
+        whisper_class = self.whisper_servers.get(model_name)
+        if whisper_class:
+            return True
+        return False
+    
+    
+    def get_whisper_port(self, model_name: str) -> Optional[int]:
+        whisper_class = self.whisper_servers.get(model_name)
+        if whisper_class:
+            return whisper_class.get_port()
+        return None
+
+
 
     def set_concurrent_runners_limit(self, limit: int):
         self.concurrent_runners_limit = limit
@@ -57,8 +145,21 @@ class LlamaRunnerManager(QObject):
             return thread.runner.get_port()
         return None
 
-    def request_runner_start(self, model_name: str) -> asyncio.Future:
+    def request_runner_start(self, model_name: str, iswhisper: bool = False) -> asyncio.Future:
         logging.info(f"Received request to start runner for model: {model_name}")
+        if iswhisper:
+            if self.is_whisper_runner_running(model_name):
+                logging.info(f"Runner for {model_name} is already starting. Returning existing Future.")
+                return self._runner_startup_futures[model_name]
+            
+            self.stop_all_whisper_servers()
+            self.start_whisper_server(model_name)
+            future = asyncio.Future()
+            future.set_result(self.get_whisper_port(model_name))
+            self._runner_startup_futures[model_name] = future
+            QTimer.singleShot(1000, lambda: self._cleanup_completed_future(model_name))
+            return future
+
 
         if model_name in self._runner_startup_futures and not self._runner_startup_futures[model_name].done():
             logging.info(f"Runner for {model_name} is already starting. Returning existing Future.")
@@ -312,3 +413,4 @@ class LlamaRunnerManager(QObject):
                         app_instance.postEvent(parent_object, parent_event)
                     else:
                         logging.warning(f"Could not post parent event for {model_name} (check_runner_statuses): App/Parent None.")
+        

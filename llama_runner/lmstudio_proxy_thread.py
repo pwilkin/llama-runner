@@ -20,6 +20,10 @@ from PySide6.QtCore import QThread, Slot # Import QTimer for potential use
 from llama_runner import gguf_metadata # Import the new metadata module
 from llama_runner.config_loader import calculate_system_fingerprint
 
+from llama_runner.whisper_cpp_runner import WhisperServer
+from io import BytesIO
+from fastapi import UploadFile as FastAPIUploadFile
+
 # Configure logging (already done in main.py for configurable levels)
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -974,6 +978,29 @@ async def _v1_embeddings_handler(request: Request):
         logging.error(f"Error in /v1/embeddings handler: {e}\n{traceback.format_exc()}")
         return JSONResponse(content={"error": {"message": f"Internal server error: {e}", "type": "internal_error"}}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+@app.post("/v1/audio/transcriptions")
+async def openai_speech_to_text(request: Request):
+    """Function to convert speech to text using whisper.cpp"""
+    try:
+        request_runner_start_callback = request.app.state.request_runner_start_callback
+        form = await request.form() 
+        file = form.get("file") 
+        contents = await file.read()
+        fastapi_file = FastAPIUploadFile(filename=file.filename, file=BytesIO(contents))
+        model = str(form.get("model"))
+        audio_config = request.app.state.audio_config
+        request_runner_start_callback(model, True)
+        whisper_server = WhisperServer(audio_config, model)
+        audio_file_path = whisper_server.convert_to_wav(fastapi_file)
+        result = whisper_server.transcribe_audio(audio_file_path)
+        return JSONResponse(content=result)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON request body")
+    except Exception as e:
+        logging.error(f"Error handling /audio/transcriptions: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal Server Error processing transcription request")
+
+
 logging.info("Updated dynamic routing handlers for /v1/chat/completions, /v1/completions, /v1/embeddings to support conditional streaming.")
 
 
@@ -999,7 +1026,8 @@ class FastAPIProxyThread(QThread): # Renamed class
 
     def __init__(self,
                  all_models_config: Dict[str, Dict[str, Any]], # Renamed models_config
-                 runtimes_config: Dict[str, Dict[str, Any]], # Added runtimes_config
+                 runtimes_config: Dict[str, Dict[str, Any]], # Added runtimes_config,
+                 audio_config,
                  is_model_running_callback: Callable[[str], bool],
                  get_runner_port_callback: Callable[[str], Optional[int]],
                  request_runner_start_callback: Callable[[str], asyncio.Future], # Callback now returns Future
@@ -1009,6 +1037,7 @@ class FastAPIProxyThread(QThread): # Renamed class
         super().__init__()
         self.all_models_config = all_models_config # Store all_models_config
         self.runtimes_config = runtimes_config # Store runtimes_config
+        self.audio_config = audio_config
         self.is_model_running_callback = is_model_running_callback
         self.get_runner_port_callback = get_runner_port_callback
         self.request_runner_start_callback = request_runner_start_callback # Store the callback
@@ -1128,6 +1157,11 @@ class FastAPIProxyThread(QThread): # Renamed class
             app.state.request_runner_start_callback = self.request_runner_start_callback # Pass the new callback
             app.state.prompt_logging_enabled = self.prompt_logging_enabled # Set prompt logging flag on state
             app.state.prompts_logger = self.prompts_logger # Set prompts logger on state
+            
+            # Audio global variables
+            app.state.audio_config = self.audio_config
+            app.state.running_whisper = None
+            
             # Extract metadata for all models and store it in app.state.models_metadata
             # Note: get_all_models_lmstudio_format expects the main models config (all_models_config)
             app.state.models_metadata = gguf_metadata.get_all_models_lmstudio_format(

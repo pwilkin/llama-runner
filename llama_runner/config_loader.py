@@ -2,17 +2,21 @@ import os
 import json
 import logging
 
+
 CONFIG_DIR = os.path.expanduser("~/.llama-runner")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 LOG_FILE = os.path.join(CONFIG_DIR, "error.log")
+
 
 # Ensure the log directory exists
 if not os.path.exists(CONFIG_DIR):
     os.makedirs(CONFIG_DIR, exist_ok=True)
 
+
 # Set up logging
 logging.basicConfig(filename=LOG_FILE, level=logging.ERROR,
                     format='%(asctime)s - %(levelname)s - %(message)s')
+
 
 def ensure_config_exists():
     """
@@ -26,6 +30,7 @@ def ensure_config_exists():
             print(f"Error creating config directory: {e}")
             logging.error(f"Error creating config directory: {e}")
             return False
+
 
     if not os.path.exists(CONFIG_FILE):
         try:
@@ -48,6 +53,7 @@ def ensure_config_exists():
             return False
     return True
 
+
 def load_config():
     """
     Loads the configuration from the JSON file.
@@ -56,20 +62,22 @@ def load_config():
     if not ensure_config_exists():
         return {}
 
+
     try:
         with open(CONFIG_FILE, "r") as f:
             config = json.load(f)
-
             # Ensure default_runtime and concurrentRunners exist
             if "default_runtime" not in config:
                 config["default_runtime"] = "llama-server"
             if "concurrentRunners" not in config:
                 config["concurrentRunners"] = 1
 
+
             # Ensure proxies section and its sub-keys exist with defaults
             proxies_config = config.get("proxies", {})
             if not isinstance(proxies_config, dict): # Handle case where 'proxies' might exist but not as a dict
                 proxies_config = {}
+
 
             ollama_proxy_config = proxies_config.get("ollama", {})
             if not isinstance(ollama_proxy_config, dict):
@@ -77,6 +85,7 @@ def load_config():
             if "enabled" not in ollama_proxy_config:
                 ollama_proxy_config["enabled"] = True
             proxies_config["ollama"] = ollama_proxy_config
+
 
             lmstudio_proxy_config = proxies_config.get("lmstudio", {})
             if not isinstance(lmstudio_proxy_config, dict):
@@ -88,6 +97,7 @@ def load_config():
             proxies_config["lmstudio"] = lmstudio_proxy_config
             
             config["proxies"] = proxies_config
+
 
             # Ensure logging section and its sub-keys exist with defaults
             logging_config = config.get("logging", {})
@@ -134,12 +144,87 @@ def load_config():
                 print("Warning: Config: 'llama-runtimes' key exists but is not a dictionary. Ignoring.")
             # If 'llama-runtimes' is not in config or is None, it's handled gracefully (no changes made to it)
 
+
+
+            raw_audio = config.get("audio")
+            if isinstance(raw_audio, dict):
+                # Process runtimes
+                raw_runtimes = raw_audio.get("runtimes")
+                processed_runtimes = {}
+                if isinstance(raw_runtimes, dict):
+                    for name, details in raw_runtimes.items():
+                        if isinstance(details, dict):
+                            runtime_path = details.get("runtime")
+                            if isinstance(runtime_path, str) and runtime_path.strip():
+                                processed_runtimes[name] = {
+                                    "runtime": runtime_path.strip()
+                                }
+                            else:
+                                logging.warning(f"Config: Audio runtime '{name}' has invalid or empty 'runtime' path. Skipping.")
+                                print(f"Warning: Config: Audio runtime '{name}' has invalid or empty 'runtime' path. Skipping.")
+                        else:
+                            logging.warning(f"Config: Audio runtime '{name}' details should be a dictionary. Skipping.")
+                            print(f"Warning: Config: Audio runtime '{name}' details should be a dictionary. Skipping.")
+                elif raw_runtimes is not None:
+                    logging.warning("Config: 'audio.runtimes' exists but is not a dictionary. Ignoring.")
+                    print("Warning: Config: 'audio.runtimes' exists but is not a dictionary. Ignoring.")
+
+
+                # Process models
+                raw_models = raw_audio.get("models")
+                processed_models = {}
+                if isinstance(raw_models, dict):
+                    for model_name, model_info in raw_models.items():
+                        if isinstance(model_info, dict):
+                            model_path = model_info.get("model_path")
+                            runtime = model_info.get("runtime")
+                            parameters = model_info.get("parameters", {})
+                            if isinstance(model_path, str) and model_path.strip():
+                                if isinstance(parameters, dict):
+                                    processed_models[model_name] = {
+                                        "model_path": model_path.strip(),
+                                        "runtime": runtime,
+                                        "parameters": parameters
+                                    }
+                                else:
+                                    logging.warning(f"Config: Parameters for model '{model_name}' should be a dictionary. Using empty dict instead.")
+                                    print(f"Warning: Config: Parameters for model '{model_name}' should be a dictionary. Using empty dict instead.")
+                                    processed_models[model_name] = {
+                                        "model_path": model_path.strip(),
+                                        "runtime": runtime,
+                                        "parameters": {}
+                                    }
+                            else:
+                                logging.warning(f"Config: Model '{model_name}' has invalid or empty 'model_path'. Skipping.")
+                                print(f"Warning: Config: Model '{model_name}' has invalid or empty 'model_path'. Skipping.")
+                        else:
+                            logging.warning(f"Config: Model entry '{model_name}' is not a dictionary. Skipping.")
+                            print(f"Warning: Config: Model entry '{model_name}' is not a dictionary. Skipping.")
+                elif raw_models is not None:
+                    logging.warning("Config: 'audio.models' exists but is not a dictionary. Ignoring.")
+                    print("Warning: Config: 'audio.models' exists but is not a dictionary. Ignoring.")
+
+
+                # Update the audio section in config
+                config["audio"] = {
+                    "runtimes": processed_runtimes,
+                    "models": processed_models
+                }
+
+
+            elif raw_audio is not None:
+                logging.warning("Config: 'audio' key exists but is not a dictionary. Ignoring.")
+                print("Warning: Config: 'audio' key exists but is not a dictionary. Ignoring.")
+
+
+             
             print(f"Loaded config (processed): {config}")  # Print loaded config
             return config
     except (OSError, json.JSONDecodeError) as e:
         print(f"Error loading config file: {e}")
         logging.error(f"Error loading config file: {e}")
         return {}
+
 
 def calculate_system_fingerprint(config: dict) -> str:
     """Calculates a 16-character hash of the configuration parameters."""
@@ -148,6 +233,7 @@ def calculate_system_fingerprint(config: dict) -> str:
     config_str = json.dumps(config, sort_keys=True)
     hash_object = hashlib.md5(config_str.encode())
     return hash_object.hexdigest()[:16]
+
 
 if __name__ == '__main__':
     # Example usage:

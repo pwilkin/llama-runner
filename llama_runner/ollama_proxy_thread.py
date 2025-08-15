@@ -20,6 +20,10 @@ from llama_runner.ollama_proxy_conversions import (
     chatRequestFromOllama, chatResponseToOllama
 )
 
+from llama_runner.whisper_cpp_runner import WhisperServer
+from io import BytesIO
+from fastapi import UploadFile as FastAPIUploadFile
+
 # --- Create our own FastAPI app instance ---
 app = FastAPI()
 # --- End create app instance ---
@@ -604,9 +608,6 @@ async def list_models(request: Request):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal Server Error processing list models request")
 
 
-
-# --- End handlers for Ollama API endpoints ---
-
 @app.post("/api/show")
 async def show_model_info(request: Request):
     """Handles Ollama /api/show requests."""
@@ -713,7 +714,6 @@ async def list_openai_models(request: Request):
         logging.error(f"Error handling /v1/models: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal Server Error processing list models request")
 
-# --- End handlers for OpenAI compatible API endpoints (v1) ---
 
 @app.post("/v1/completions")
 async def openai_completions(request: Request):
@@ -790,6 +790,32 @@ async def openai_embeddings(request: Request):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal Server Error processing embeddings request")
 
 
+@app.post("/v1/audio/transcriptions")
+async def openai_speech_to_text(request: Request):
+    """Function to convert speech to text using whisper.cpp"""
+    try:
+        request_runner_start_callback = request.app.state.request_runner_start_callback
+        form = await request.form() 
+        file = form.get("file") 
+        contents = await file.read()
+        fastapi_file = FastAPIUploadFile(filename=file.filename, file=BytesIO(contents))
+        model = str(form.get("model"))
+        audio_config = request.app.state.audio_config
+        request_runner_start_callback(model, True)
+        whisper_server = WhisperServer(audio_config, model)
+        audio_file_path = whisper_server.convert_to_wav(fastapi_file)
+        result = whisper_server.transcribe_audio(audio_file_path)
+        return JSONResponse(content=result)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON request body")
+    except Exception as e:
+        logging.error(f"Error handling /audio/transcriptions: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal Server Error processing transcription request")
+
+
+# --- End handlers for OpenAI compatible API endpoints (v1) ---
+
+
 class OllamaProxyThread(QThread):
     """
     QThread to run the FastAPI proxy emulating the Ollama API in a separate thread.
@@ -802,7 +828,9 @@ class OllamaProxyThread(QThread):
     def __init__(self,
                  all_models_config: Dict[str, Dict[str, Any]], # Renamed models_config to all_models_config
                  runtimes_config: Dict[str, Dict[str, Any]], # Renamed models_config to runtimes_config
+                 audio_config,
                  is_model_running_callback: Callable[[str], bool],
+                 is_model_whisper_running,
                  get_runner_port_callback: Callable[[str], Optional[int]],
                  request_runner_start_callback: Callable[[str], asyncio.Future],
                  prompt_logging_enabled: bool, # Add prompt logging flag
@@ -810,8 +838,10 @@ class OllamaProxyThread(QThread):
         super().__init__()
         self.all_models_config = all_models_config # Store all_models_config
         self.runtimes_config = runtimes_config # Store runtimes_config
+        self.audio_config = audio_config
         self.is_model_running_callback = is_model_running_callback
         self.get_runner_port_callback = get_runner_port_callback
+        self.is_model_whisper_running = is_model_whisper_running
         self.request_runner_start_callback = request_runner_start_callback
         self.prompt_logging_enabled = prompt_logging_enabled # Store the flag
         self.prompts_logger = prompts_logger # Store the logger instance
@@ -903,11 +933,15 @@ class OllamaProxyThread(QThread):
             app.state.all_models_config = self.all_models_config # Pass all_models_config
             app.state.runtimes_config = self.runtimes_config # Pass runtimes_config
             app.state.is_model_running_callback = self.is_model_running_callback
+            app.state.is_model_whisper_running = self.is_model_whisper_running
             app.state.get_runner_port_callback = self.get_runner_port_callback
             app.state.request_runner_start_callback = self.request_runner_start_callback
             app.state.prompt_logging_enabled = self.prompt_logging_enabled # Set prompt logging flag on state
             app.state.prompts_logger = self.prompts_logger # Set prompts logger on state
-
+            
+            # Audio global variables
+            app.state.audio_config = self.audio_config
+            
             # Use port 11434 as required for Ollama emulation
             uvicorn_config = uvicorn.Config(app, host="127.0.0.1", port=11434, reload=False)
             self._uvicorn_server = uvicorn.Server(uvicorn_config)

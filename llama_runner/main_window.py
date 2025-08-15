@@ -37,7 +37,9 @@ class MainWindow(QWidget):
         # Load settings from config with defaults
         self.prompt_logging_enabled = self.config.get('logging', {}).get('prompt_logging_enabled', False)
         self.llama_runtimes = self.config.get("llama-runtimes", {})
+        self.audio_config = self.config.get("audio")
         self.default_runtime = self.config.get("default_runtime", "llama-server")
+        self.audio_models = self.audio_config.get("models", {})
         self.models = self.config.get("models", {})
         self.concurrent_runners_limit = self.config.get("concurrentRunners", 1)
         if not isinstance(self.concurrent_runners_limit, int) or self.concurrent_runners_limit < 1:
@@ -63,7 +65,11 @@ class MainWindow(QWidget):
                     self.model_metadata_cache[model_name] = metadata
             else:
                 logging.warning(f"Model '{model_name}' has no 'model_path' in config. Skipping metadata caching.")
-
+        for model_name, model_config in self.audio_models.items():
+            model_path = model_config.get("model_path")
+            if model_path:
+                logging.warning(f"Model '{model_name}' has no 'model_path' in config. Skipping metadata caching.")
+        
         self.fastapi_proxy_thread: Optional[FastAPIProxyThread] = None
         self.ollama_proxy_thread: Optional[OllamaProxyThread] = None
 
@@ -114,6 +120,14 @@ class MainWindow(QWidget):
             self.model_status_widgets[model_name] = status_widget
             status_widget.start_button.clicked.connect(lambda checked, name=model_name: self.llama_runner_manager.request_runner_start(name))
             status_widget.stop_button.clicked.connect(lambda checked, name=model_name: self.llama_runner_manager.stop_llama_runner(name))
+        for model_name in self.audio_models.keys():
+            self.model_list_widget.addItem(model_name)
+            #model_metadata = self.model_metadata_cache.get(model_name)
+            status_widget = ModelStatusWidget(model_name)
+            self.model_status_stack.addWidget(status_widget)
+            self.model_status_widgets[model_name] = status_widget
+            status_widget.start_button.clicked.connect(lambda checked, name=model_name: self.llama_runner_manager.request_runner_start(name, True))
+            status_widget.stop_button.clicked.connect(lambda checked, name=model_name: self.llama_runner_manager.stop_whisper_server(name))
 
         self.model_list_widget.currentItemChanged.connect(self.on_model_selection_changed)
 
@@ -136,13 +150,14 @@ class MainWindow(QWidget):
         self.llama_runner_manager = LlamaRunnerManager(
             models=self.models,
             llama_runtimes=self.llama_runtimes,
+            audio_config=self.audio_config,
             default_runtime=self.default_runtime,
             model_status_widgets=self.model_status_widgets,
             # runner_port_ready_for_proxy and runner_stopped_for_proxy are now owned by LlamaRunnerManager
             parent=self,
         )
         self.llama_runner_manager.set_concurrent_runners_limit(self.concurrent_runners_limit)
-
+        
         # --- Start the FastAPI Proxy (for LM Studio) automatically if enabled ---
         if self.lmstudio_proxy_enabled:
             self.start_fastapi_proxy()
@@ -248,6 +263,7 @@ class MainWindow(QWidget):
                 self.model_status_stack.setCurrentWidget(self.no_model_selected_widget)
         else:
             self.model_status_stack.setCurrentWidget(self.no_model_selected_widget)
+    
 
     # Runner management methods moved to LlamaRunnerManager
 
@@ -264,6 +280,7 @@ class MainWindow(QWidget):
         self.fastapi_proxy_thread = FastAPIProxyThread(
             all_models_config=self.models,
             runtimes_config=self.llama_runtimes,
+            audio_config=self.audio_config,
             is_model_running_callback=self.llama_runner_manager.is_llama_runner_running,
             get_runner_port_callback=self.llama_runner_manager.get_runner_port,
             request_runner_start_callback=self.llama_runner_manager.request_runner_start,
@@ -293,7 +310,9 @@ class MainWindow(QWidget):
         self.ollama_proxy_thread = OllamaProxyThread(
             all_models_config=self.models,
             runtimes_config=self.llama_runtimes,
+            audio_config=self.audio_config,
             is_model_running_callback=self.llama_runner_manager.is_llama_runner_running,
+            is_model_whisper_running=self.llama_runner_manager.is_whisper_runner_running,
             get_runner_port_callback=self.llama_runner_manager.get_runner_port,
             request_runner_start_callback=self.llama_runner_manager.request_runner_start,
             prompt_logging_enabled=self.prompt_logging_enabled,
