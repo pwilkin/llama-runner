@@ -84,7 +84,6 @@ class LlamaCppRunner(QObject):
                 command.append(f"--{arg_name}")
                 command.append(str(value))
 
-        print(f"Starting llama.cpp server with command: {' '.join(command)}")
         logging.info(f"Starting llama.cpp server with command: {' '.join(command)}")
 
         # Clear the output buffer before starting a new process
