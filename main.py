@@ -1,12 +1,14 @@
 import sys
-import logging # Import logging
-import argparse # Import argparse
-import os # Import os
-import signal # Import signal for SIGINT handling
-from datetime import datetime # Import datetime
+import logging
+import argparse
+import os
+import signal
+from datetime import datetime
+import asyncio
+import qasync
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QCoreApplication, QTimer # Added QCoreApplication, QTimer
-from PySide6.QtGui import QIcon # Import QIcon
+from PySide6.QtCore import QCoreApplication
+from PySide6.QtGui import QIcon
 
 # Import CONFIG_DIR and ensure_config_exists, load_config
 from llama_runner.config_loader import CONFIG_DIR, ensure_config_exists, load_config
@@ -146,48 +148,62 @@ def main():
 
         main_component = HeadlessServiceManager(hsm_app_config, hsm_model_config)
         
-        # Connect the HeadlessServiceManager's shutdown signal to QCoreApplication's quit
-        # Ensure app_instance is valid before connecting signals
-        if app_instance:
-            main_component.shutdown_signal.connect(app_instance.quit)
-            # Also connect QCoreApplication's aboutToQuit to the service manager's stop
-            app_instance.aboutToQuit.connect(main_component.stop_services)
-        else:
-            logging.error("app_instance is None, cannot connect signals for HeadlessServiceManager.")
-            sys.exit(1) # Critical error if app_instance is not set in headless mode
+        # In headless mode, we set up an async main function
+        async def headless_main():
+            nonlocal main_component
+            main_component = HeadlessServiceManager(hsm_app_config, hsm_model_config)
 
-        # SIGINT Handler for graceful shutdown in headless mode
-        # This needs to be defined where main_component is in scope (it's the HeadlessServiceManager instance)
-        # and QCoreApplication is available.
-        def sigint_handler(signum, frame):
-            logging.info("SIGINT received, requesting application quit...")
-            app = QCoreApplication.instance()
-            if app:
-                app.quit() # Just tell Qt to quit
-            else:
-                logging.warning("QCoreApplication.instance() is None in SIGINT handler. Cannot quit.")
+            # The 'main_component' now exists and its event processor is running.
+            # We can now wait for the application to quit.
+            await app_instance.async_exec()
+
+        # SIGINT handler to gracefully shutdown
+        def sigint_handler(*args):
+            logging.info("SIGINT received, shutting down services...")
+            # We need to run the async stop_services function
+            # and then quit the application.
+            asyncio.create_task(shutdown_task())
+
+        async def shutdown_task():
+            await main_component.stop_services()
+            app_instance.quit()
 
         signal.signal(signal.SIGINT, sigint_handler)
-        logging.info("Registered SIGINT handler for graceful shutdown in headless mode.")
 
-        logging.info("HeadlessServiceManager initialized.")
-        # In headless mode, services are started by HeadlessServiceManager's __init__
+        # Set the qasync policy
+        asyncio.set_event_loop_policy(qasync.DefaultQEventLoopPolicy())
+        loop = asyncio.get_event_loop()
 
-        # Timer to allow Python to process signals
-        # QTimer is already imported from PySide6.QtCore
-        signal_processing_timer = QTimer()
-        signal_processing_timer.timeout.connect(lambda: None)
-        signal_processing_timer.start(200) # ms
-        logging.info("Started QTimer for signal processing in headless mode.")
+        try:
+            loop.run_until_complete(headless_main())
+            exit_code = 0 # Assume clean exit
+        except Exception as e:
+            logging.critical(f"An unhandled error occurred in headless main: {e}", exc_info=True)
+            exit_code = 1
+        finally:
+            loop.close()
+            logging.info(f"Application exited with code {exit_code}.")
+            sys.exit(exit_code)
 
-    if not app_instance:
-        logging.critical("Failed to initialize application (QApplication or QCoreApplication). Exiting.")
-        sys.exit(1)
+    else: # GUI Mode
+        if not app_instance:
+            logging.critical("Failed to initialize QApplication for GUI. Exiting.")
+            sys.exit(1)
 
-    # Start the Qt event loop
-    exit_code = app_instance.exec()
-    logging.info(f"Application exited with code {exit_code}.")
-    sys.exit(exit_code)
+        # Set up qasync for the GUI event loop
+        asyncio.set_event_loop_policy(qasync.DefaultQEventLoopPolicy())
+        loop = asyncio.get_event_loop()
+
+        try:
+            loop.run_forever()
+            exit_code = 0
+        except Exception as e:
+            logging.critical(f"An unhandled error occurred in GUI main: {e}", exc_info=True)
+            exit_code = 1
+        finally:
+            loop.close()
+            logging.info(f"Application exited with code {exit_code}.")
+            sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()

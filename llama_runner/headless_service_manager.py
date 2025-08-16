@@ -1,5 +1,6 @@
 import logging
-from PySide6.QtCore import QObject, Signal # Changed from PyQt5
+import asyncio
+from PySide6.QtCore import QObject, Signal
 
 from llama_runner.llama_runner_manager import LlamaRunnerManager
 from llama_runner.ollama_proxy_thread import OllamaProxyThread
@@ -28,17 +29,30 @@ class HeadlessServiceManager(QObject):
 
         self._initialize_services()
 
+    def _on_runner_event(self, message: str):
+        # In headless mode, we just log the events.
+        logger.info(f"Runner Manager Event: {message}")
+
+    def _on_runner_error(self, model_name: str, message: str, output_buffer: list):
+        logger.error(f"Runner error for {model_name}: {message}")
+
     def _initialize_services(self):
         """Initializes all managed services."""
         logger.info("Initializing services for headless mode...")
 
         # Initialize LlamaRunnerManager
         self.llama_runner_manager = LlamaRunnerManager(
-            models=self.models_specific_config, # This is app_config['models']
-            llama_runtimes=self.app_config.get('llama-runtimes', {}), # Ensure correct key
-            default_runtime=self.app_config.get('default_runtime', 'llama-server'), # Ensure correct key and default
-            model_status_widgets={} # No UI widgets in headless mode
+            models=self.models_specific_config,
+            llama_runtimes=self.app_config.get('llama-runtimes', {}),
+            default_runtime=self.app_config.get('default_runtime', 'llama-server'),
+            on_started=lambda name: self._on_runner_event(f"Started {name}"),
+            on_stopped=lambda name: self._on_runner_event(f"Stopped {name}"),
+            on_error=self._on_runner_error,
+            on_port_ready=lambda name, port: self._on_runner_event(f"Port {port} ready for {name}"),
         )
+        # Start the manager's event processor
+        asyncio.create_task(self.llama_runner_manager._event_processor())
+
         concurrent_runners = self.app_config.get("concurrentRunners", 1)
         if not isinstance(concurrent_runners, int) or concurrent_runners < 1:
             logger.warning(f"Invalid 'concurrentRunners' value: {concurrent_runners}. Defaulting to 1.")
@@ -104,26 +118,27 @@ class HeadlessServiceManager(QObject):
     #     # Potentially trigger application shutdown or other error handling
     #     # For now, just log.
 
-    def stop_services(self):
+    async def stop_services(self):
         """Gracefully stops all managed services."""
         logger.info("Stopping headless services...")
 
-        if self.ollama_proxy and self.ollama_proxy.isRunning():
+        # The proxy threads stop themselves when their main loop exits
+        if self.ollama_proxy and self.ollama_proxy.is_alive():
             logger.info("Stopping Ollama Proxy...")
-            self.ollama_proxy.stop() # Correct stop method
-            self.ollama_proxy.wait() # Wait for thread to finish
+            self.ollama_proxy.stop()
+            self.ollama_proxy.join()
             logger.info("Ollama Proxy stopped.")
 
-        if self.lmstudio_proxy and self.lmstudio_proxy.isRunning():
+        if self.lmstudio_proxy and self.lmstudio_proxy.is_alive():
             logger.info("Stopping LM Studio Proxy...")
-            self.lmstudio_proxy.stop() # Correct stop method
-            self.lmstudio_proxy.wait() # Wait for thread to finish
+            self.lmstudio_proxy.stop()
+            self.lmstudio_proxy.join()
             logger.info("LM Studio Proxy stopped.")
 
         if self.llama_runner_manager:
             logger.info("Stopping LlamaRunnerManager...")
-            self.llama_runner_manager.stop_all_llama_runners() # Correct method to stop all runners
-            logger.info("LlamaRunnerManager stop requested.")
+            await self.llama_runner_manager.stop_all_llama_runners_async()
+            logger.info("LlamaRunnerManager runners stopped.")
 
         logger.info("All headless services stopped.")
 
