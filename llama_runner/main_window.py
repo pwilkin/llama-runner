@@ -7,7 +7,7 @@ from typing import Optional, Dict
 
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QListWidget, QStackedWidget)
-from PySide6.QtCore import Slot, Qt, QTimer, QEvent
+from PySide6.QtCore import Slot, Qt, QEvent
 
 from llama_runner.config_loader import load_config
 from llama_runner.lmstudio_proxy_thread import FastAPIProxyThread
@@ -160,9 +160,6 @@ class MainWindow(QWidget):
             print("Ollama proxy is disabled in config.")
             self.ollama_proxy_thread = None # Ensure it's None if not started
 
-        self._status_check_timer = QTimer(self)
-        self._status_check_timer.start(5000)
-        self._status_check_timer.timeout.connect(self.llama_runner_manager.check_runner_statuses)
 
         self.setStyleSheet(self.styleSheet() + """
             QPushButton {
