@@ -144,9 +144,6 @@ class MainWindow(QWidget):
             on_port_ready=self.on_runner_port_ready,
         )
         self.llama_runner_manager.set_concurrent_runners_limit(self.concurrent_runners_limit)
-        # The event processor for the manager needs to be started.
-        # This assumes the main application is running an asyncio event loop (e.g., via qasync).
-        asyncio.create_task(self.llama_runner_manager._event_processor())
 
 
         # --- Start the FastAPI Proxy (for LM Studio) automatically if enabled ---

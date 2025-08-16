@@ -50,9 +50,6 @@ class HeadlessServiceManager(QObject):
             on_error=self._on_runner_error,
             on_port_ready=lambda name, port: self._on_runner_event(f"Port {port} ready for {name}"),
         )
-        # Start the manager's event processor
-        asyncio.create_task(self.llama_runner_manager._event_processor())
-
         concurrent_runners = self.app_config.get("concurrentRunners", 1)
         if not isinstance(concurrent_runners, int) or concurrent_runners < 1:
             logger.warning(f"Invalid 'concurrentRunners' value: {concurrent_runners}. Defaulting to 1.")
