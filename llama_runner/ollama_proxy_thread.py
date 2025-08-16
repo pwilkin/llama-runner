@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 
-from threading import Thread
+from PySide6.QtCore import QThread, Slot
 
 from llama_runner import gguf_metadata
 # Removed import: from llama_runner.config_loader import calculate_system_fingerprint
@@ -790,9 +790,9 @@ async def openai_embeddings(request: Request):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal Server Error processing embeddings request")
 
 
-class OllamaProxyThread(Thread):
+class OllamaProxyThread(QThread):
     """
-    Thread to run the FastAPI proxy emulating the Ollama API.
+    QThread to run the FastAPI proxy emulating the Ollama API in a separate thread.
     """
     def __init__(self,
                  all_models_config: Dict[str, Dict[str, Any]],
@@ -814,6 +814,7 @@ class OllamaProxyThread(Thread):
         self._uvicorn_server = None
         self._runner_ready_futures: Dict[str, asyncio.Future] = {}
 
+    @Slot(str, int)
     def on_runner_port_ready(self, model_name: str, port: int):
         logging.debug(f"Ollama Proxy thread received runner_port_ready for {model_name} on port {port}")
         if model_name in self._runner_ready_futures and not self._runner_ready_futures[model_name].done():
@@ -823,6 +824,7 @@ class OllamaProxyThread(Thread):
         else:
              logging.info(f"Received runner_port_ready for {model_name}, but no pending local Future found.")
 
+    @Slot(str)
     def on_runner_stopped(self, model_name: str):
         logging.debug(f"Ollama Proxy thread received runner_stopped for {model_name}")
         if model_name in self._runner_ready_futures:

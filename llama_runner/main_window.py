@@ -15,17 +15,13 @@ from llama_runner.ollama_proxy_thread import OllamaProxyThread
 from llama_runner import gguf_metadata
 
 from llama_runner.model_status_widget import ModelStatusWidget
-from llama_runner.llama_runner_manager import LlamaRunnerManager # Import events if MainWindow were to handle them directly
+from llama_runner.llama_runner_manager import LlamaRunnerManager
+from PySide6.QtCore import Signal
 
 
 class MainWindow(QWidget):
-    # runner_port_ready_for_proxy and runner_stopped_for_proxy are now defined in LlamaRunnerManager
-    # # Signal emitted when a runner's port is ready
-    # # This signal is emitted by MainWindow, connected to the proxy thread
-    # runner_port_ready_for_proxy = Signal(str, int)
-    # # Signal emitted when a runner stops
-    # # This signal is emitted by MainWindow, connected to the proxy thread
-    # runner_stopped_for_proxy = Signal(str)
+    runner_port_ready_for_proxy = Signal(str, int)
+    runner_stopped_for_proxy = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -183,7 +179,6 @@ class MainWindow(QWidget):
             }
         """)
 
-
     def closeEvent(self, event):
         """
         Handles the window close event. Stops all running threads and waits for their completion.
@@ -316,6 +311,8 @@ class MainWindow(QWidget):
             prompt_logging_enabled=self.prompt_logging_enabled,
             prompts_logger=self.prompts_logger,
         )
+        self.runner_port_ready_for_proxy.connect(self.fastapi_proxy_thread.on_runner_port_ready)
+        self.runner_stopped_for_proxy.connect(self.fastapi_proxy_thread.on_runner_stopped)
         self.fastapi_proxy_thread.start()
 
     def start_ollama_proxy(self):
@@ -333,6 +330,8 @@ class MainWindow(QWidget):
             prompt_logging_enabled=self.prompt_logging_enabled,
             prompts_logger=self.prompts_logger,
         )
+        self.runner_port_ready_for_proxy.connect(self.ollama_proxy_thread.on_runner_port_ready)
+        self.runner_stopped_for_proxy.connect(self.ollama_proxy_thread.on_runner_stopped)
         self.ollama_proxy_thread.start()
 
     def stop_fastapi_proxy(self):
@@ -349,6 +348,45 @@ class MainWindow(QWidget):
         else:
             print("Ollama Proxy is not running.")
 
+
+    # --- Callback methods for LlamaRunnerManager ---
+
+    def on_runner_started(self, model_name: str):
+        widget = self.model_status_widgets.get(model_name)
+        if widget:
+            widget.update_status("Starting...")
+            widget.set_buttons_enabled(False, False)
+
+    def on_runner_stopped(self, model_name: str):
+        widget = self.model_status_widgets.get(model_name)
+        if widget:
+            widget.update_status("Not Running")
+            widget.update_port("N/A")
+            widget.set_buttons_enabled(True, False)
+        self.runner_stopped_for_proxy.emit(model_name)
+
+    def on_runner_error(self, model_name: str, message: str, output_buffer: list):
+        from llama_runner.error_output_dialog import ErrorOutputDialog
+        widget = self.model_status_widgets.get(model_name)
+        if widget:
+            widget.update_status("Error")
+
+        dialog_message = f"Llama.cpp server for {model_name} encountered an error:\n{message}"
+        error_dialog = ErrorOutputDialog(
+            title=f"Llama Runner Error: {model_name}",
+            message=dialog_message,
+            output_lines=output_buffer,
+            parent=self
+        )
+        error_dialog.exec()
+
+    def on_runner_port_ready(self, model_name: str, port: int):
+        widget = self.model_status_widgets.get(model_name)
+        if widget:
+            widget.update_port(port)
+            widget.update_status("Running")
+            widget.set_buttons_enabled(False, True)
+        self.runner_port_ready_for_proxy.emit(model_name, port)
 
     def open_config_file(self):
         """

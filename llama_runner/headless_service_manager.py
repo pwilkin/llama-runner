@@ -29,12 +29,22 @@ class HeadlessServiceManager(QObject):
 
         self._initialize_services()
 
-    def _on_runner_event(self, message: str):
-        # In headless mode, we just log the events.
-        logger.info(f"Runner Manager Event: {message}")
+    runner_port_ready_for_proxy = Signal(str, int)
+    runner_stopped_for_proxy = Signal(str)
 
-    def _on_runner_error(self, model_name: str, message: str, output_buffer: list):
+    def on_runner_started_callback(self, model_name: str):
+        logger.info(f"Runner started: {model_name}")
+
+    def on_runner_stopped_callback(self, model_name: str):
+        logger.info(f"Runner stopped: {model_name}")
+        self.runner_stopped_for_proxy.emit(model_name)
+
+    def on_runner_error_callback(self, model_name: str, message: str, output_buffer: list):
         logger.error(f"Runner error for {model_name}: {message}")
+
+    def on_runner_port_ready_callback(self, model_name: str, port: int):
+        logger.info(f"Runner port ready for {model_name}: {port}")
+        self.runner_port_ready_for_proxy.emit(model_name, port)
 
     def _initialize_services(self):
         """Initializes all managed services."""
@@ -45,10 +55,10 @@ class HeadlessServiceManager(QObject):
             models=self.models_specific_config,
             llama_runtimes=self.app_config.get('llama-runtimes', {}),
             default_runtime=self.app_config.get('default_runtime', 'llama-server'),
-            on_started=lambda name: self._on_runner_event(f"Started {name}"),
-            on_stopped=lambda name: self._on_runner_event(f"Stopped {name}"),
-            on_error=self._on_runner_error,
-            on_port_ready=lambda name, port: self._on_runner_event(f"Port {port} ready for {name}"),
+            on_started=self.on_runner_started_callback,
+            on_stopped=self.on_runner_stopped_callback,
+            on_error=self.on_runner_error_callback,
+            on_port_ready=self.on_runner_port_ready_callback,
         )
         concurrent_runners = self.app_config.get("concurrentRunners", 1)
         if not isinstance(concurrent_runners, int) or concurrent_runners < 1:
@@ -80,6 +90,8 @@ class HeadlessServiceManager(QObject):
                 prompt_logging_enabled=prompt_logging_enabled,
                 prompts_logger=logging.getLogger("prompts")
             )
+            self.runner_port_ready_for_proxy.connect(self.ollama_proxy.on_runner_port_ready)
+            self.runner_stopped_for_proxy.connect(self.ollama_proxy.on_runner_stopped)
             self.ollama_proxy.start()
             logger.info("Ollama Proxy thread started.")
         else:
@@ -98,6 +110,8 @@ class HeadlessServiceManager(QObject):
                 prompts_logger=logging.getLogger("prompts"),
                 api_key=lmstudio_api_key
             )
+            self.runner_port_ready_for_proxy.connect(self.lmstudio_proxy.on_runner_port_ready)
+            self.runner_stopped_for_proxy.connect(self.lmstudio_proxy.on_runner_stopped)
             self.lmstudio_proxy.start()
             logger.info("LM Studio Proxy thread started.")
         else:

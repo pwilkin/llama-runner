@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute # Import APIRoute for isinstance check
 import uvicorn
 
-from threading import Thread
+from PySide6.QtCore import QThread, Slot
 
 from llama_runner import gguf_metadata # Import the new metadata module
 from llama_runner.config_loader import calculate_system_fingerprint
@@ -987,47 +987,57 @@ logging.info("Updated dynamic routing handlers for /v1/chat/completions, /v1/com
 # --- End add routes ---
 
 
-class FastAPIProxyThread(Thread): # Renamed class
+class FastAPIProxyThread(QThread): # Renamed class
     """
-    Thread to run the FastAPI proxy.
+    QThread to run the FastAPI proxy in a separate thread. # Updated description
     Handles LM Studio API emulation and runner management requests.
     """
     def __init__(self,
-                 all_models_config: Dict[str, Dict[str, Any]],
-                 runtimes_config: Dict[str, Dict[str, Any]],
+                 all_models_config: Dict[str, Dict[str, Any]], # Renamed models_config
+                 runtimes_config: Dict[str, Dict[str, Any]], # Added runtimes_config
                  is_model_running_callback: Callable[[str], bool],
                  get_runner_port_callback: Callable[[str], Optional[int]],
-                 request_runner_start_callback: Callable[[str], asyncio.Future],
-                 prompt_logging_enabled: bool,
-                 prompts_logger: logging.Logger,
-                 api_key: Optional[str] = None):
+                 request_runner_start_callback: Callable[[str], asyncio.Future], # Callback now returns Future
+                 prompt_logging_enabled: bool, # Add prompt logging flag
+                 prompts_logger: logging.Logger, # Add prompts logger instance
+                 api_key: Optional[str] = None): # Changed to Optional[str]
         super().__init__()
-        self.all_models_config = all_models_config
-        self.runtimes_config = runtimes_config
+        self.all_models_config = all_models_config # Store all_models_config
+        self.runtimes_config = runtimes_config # Store runtimes_config
         self.is_model_running_callback = is_model_running_callback
         self.get_runner_port_callback = get_runner_port_callback
-        self.request_runner_start_callback = request_runner_start_callback
-        self.prompt_logging_enabled = prompt_logging_enabled
-        self.prompts_logger = prompts_logger
+        self.request_runner_start_callback = request_runner_start_callback # Store the callback
+        self.prompt_logging_enabled = prompt_logging_enabled # Store the flag
+        self.prompts_logger = prompts_logger # Store the logger instance
         self.api_key = api_key
         self.is_running = False
         self._uvicorn_server = None
         self._runner_ready_futures: Dict[str, asyncio.Future] = {}
 
+    @Slot(str, int)
     def on_runner_port_ready(self, model_name: str, port: int):
+        """Slot to handle runner_port_ready_for_proxy signal from MainWindow."""
         logging.debug(f"Proxy thread received runner_port_ready for {model_name} on port {port}")
+        # When a runner is ready, resolve its corresponding Future in our local dictionary
         if model_name in self._runner_ready_futures and not self._runner_ready_futures[model_name].done():
+            logging.debug(f"Resolving local runner_ready_future for {model_name} with port {port}")
             self._runner_ready_futures[model_name].set_result(port)
         elif model_name in self._runner_ready_futures and self._runner_ready_futures[model_name].done():
              logging.warning(f"Received runner_port_ready for {model_name}, but local Future was already done.")
         else:
-             logging.info(f"Received runner_port_ready for {model_name}, but no pending local Future found.")
+             logging.info(f"Received runner_port_ready for {model_name}, but no pending local Future found. This can occur if the runner was started outside the proxy's request flow or the Future was already resolved. No action needed.")
 
+
+    @Slot(str)
     def on_runner_stopped(self, model_name: str):
+        """Slot to handle runner_stopped_for_proxy signal from MainWindow."""
         logging.debug(f"Proxy thread received runner_stopped for {model_name}")
+        # If a runner stops, cancel or set exception on its Future in our local dictionary
         if model_name in self._runner_ready_futures:
              if not self._runner_ready_futures[model_name].done():
+                 logging.debug(f"Setting exception on local runner_ready_future for {model_name} due to stop.")
                  self._runner_ready_futures[model_name].set_exception(RuntimeError(f"Runner for {model_name} stopped unexpectedly."))
+             # Remove the future from the local dictionary
              del self._runner_ready_futures[model_name]
              logging.debug(f"Cleaned up local runner_ready_future for {model_name}")
         else:
