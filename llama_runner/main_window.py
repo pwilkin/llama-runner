@@ -192,18 +192,21 @@ class MainWindow(QWidget):
         print("MainWindow closing. Stopping all runners and proxy...")
 
         try:
-            # Stop and wait for all runner threads
-            self.llama_runner_manager.stop_all_llama_runners()
+            # The new manager uses an async stop method.
+            # In a Qt closeEvent, we can't easily run an async method to completion.
+            # The best we can do is to signal the threads to stop.
+            # The qasync loop in main.py will handle the async cleanup.
+            self.llama_runner_manager.stop_all_llama_runners_async()
 
             # Stop and wait for FastAPI proxy thread
-            if self.fastapi_proxy_thread and self.fastapi_proxy_thread.isRunning():
+            if self.fastapi_proxy_thread and self.fastapi_proxy_thread.is_alive():
                 self.fastapi_proxy_thread.stop()
-                self.fastapi_proxy_thread.wait()
+                self.fastapi_proxy_thread.join()
 
             # Stop and wait for Ollama proxy thread
-            if self.ollama_proxy_thread and self.ollama_proxy_thread.isRunning():
+            if self.ollama_proxy_thread and self.ollama_proxy_thread.is_alive():
                 self.ollama_proxy_thread.stop()
-                self.ollama_proxy_thread.wait()
+                self.ollama_proxy_thread.join()
 
         except KeyboardInterrupt:
             print("KeyboardInterrupt received during shutdown. Attempting best-effort thread cleanup...")
