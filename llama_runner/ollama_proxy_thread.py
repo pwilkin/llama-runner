@@ -1,26 +1,21 @@
 import asyncio
 import logging
-import traceback
 import json
 from typing import Dict, Any, Callable, Optional, AsyncGenerator
 
 import httpx
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 
-from llama_runner import gguf_metadata
 from llama_runner.ollama_proxy_conversions import (
-    embeddingRequestFromOllama, embeddingResponseToOllama,
-    generateRequestFromOllama, generateResponseToOllama,
-    chatRequestFromOllama, chatResponseToOllama
+    embeddingRequestFromOllama, generateRequestFromOllama, chatRequestFromOllama
 )
 
 app = FastAPI()
 
 async def _dynamic_route_runner_request_generator(request: Request, target_path: str, request_body: Dict[str, Any]) -> AsyncGenerator[bytes, None]:
-    all_models_config = request.app.state.all_models_config
     get_runner_port_callback = request.app.state.get_runner_port_callback
     request_runner_start_callback = request.app.state.request_runner_start_callback
     model_name_from_request = request_body.get("model")

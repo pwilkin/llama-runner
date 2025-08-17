@@ -1,7 +1,7 @@
 import asyncio
 import os
 import logging
-from typing import Optional, Dict, Any, Union, Callable, List
+from typing import Optional, Dict, Callable, List
 
 from llama_runner.llama_runner_thread import (
     LlamaRunnerThread,

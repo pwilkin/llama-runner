@@ -3,7 +3,6 @@ import logging
 import argparse
 import os
 import signal
-from datetime import datetime
 import asyncio
 import qasync
 from PySide6.QtWidgets import QApplication

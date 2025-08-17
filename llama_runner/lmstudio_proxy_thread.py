@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute # Import APIRoute for isinstance check
 import uvicorn
 
-from PySide6.QtCore import QThread, Slot
 
 from llama_runner import gguf_metadata # Import the new metadata module
 from llama_runner.config_loader import calculate_system_fingerprint
@@ -111,10 +110,11 @@ async def _fetch_non_streaming_v1_response(
     prompts_logger = getattr(request.app.state, 'prompts_logger', logging.getLogger())
     proxy_thread_instance = getattr(request.app.state, 'proxy_thread_instance', None)
 
-    if not isinstance(proxy_thread_instance, FastAPIProxyThread):
-        logging.error("proxy_thread_instance not found or not of type FastAPIProxyThread in app.state")
-        return {"error": {"message": "Internal server error: Proxy thread not configured.", "type": "internal_error"}}
-    proxy_thread: FastAPIProxyThread = proxy_thread_instance
+    if not proxy_thread_instance:
+        logging.error("proxy_thread_instance not found in app.state")
+        return {"error": {"message": "Internal server error: Proxy not configured.", "type": "internal_error"}}
+    # The instance is the LMStudioProxyServer itself.
+    proxy_server = proxy_thread_instance
 
 
     # Extract the model name from the request body
@@ -223,16 +223,16 @@ async def _fetch_non_streaming_v1_response(
         try:
             # Request startup via the callback, which returns an asyncio.Future
             # Store the future locally in the proxy thread instance
-            if model_name not in proxy_thread._runner_ready_futures or proxy_thread._runner_ready_futures[model_name].done():
+            if model_name not in proxy_server._runner_ready_futures or proxy_server._runner_ready_futures[model_name].done():
                  logging.debug(f"Creating new startup future for {model_name}")
-                 proxy_thread._runner_ready_futures[model_name] = request_runner_start_callback(model_name)
+                 proxy_server._runner_ready_futures[model_name] = request_runner_start_callback(model_name)
             else:
                  logging.debug(f"Using existing startup future for {model_name}")
 
             # Wait for the runner to become ready (Future to resolve)
             # Use a timeout to prevent infinite waiting
             port = await asyncio.wait_for(
-                proxy_thread._runner_ready_futures[model_name],
+                proxy_server._runner_ready_futures[model_name],
                 timeout=startup_timeout
             )
             logging.info(f"Runner for {model_name} is ready on port {port} after startup.")
@@ -240,26 +240,26 @@ async def _fetch_non_streaming_v1_response(
         except asyncio.TimeoutError:
             logging.error(f"Timeout waiting for runner {model_name} to start after {startup_timeout} seconds.")
             # Clean up the future if it timed out
-            if model_name in proxy_thread._runner_ready_futures and not proxy_thread._runner_ready_futures[model_name].done():
-                 proxy_thread._runner_ready_futures[model_name].cancel()
-                 del proxy_thread._runner_ready_futures[model_name]
+            if model_name in proxy_server._runner_ready_futures and not proxy_server._runner_ready_futures[model_name].done():
+                 proxy_server._runner_ready_futures[model_name].cancel()
+                 del proxy_server._runner_ready_futures[model_name]
             return {"error": {"message": f"Timeout starting runner for model '{model_name}'.", "type": "runner_startup_error"}}
         except Exception as e:
             logging.error(f"Error during runner startup for {model_name}: {e}\n{traceback.format_exc()}")
-            if model_name in proxy_thread._runner_ready_futures and not proxy_thread._runner_ready_futures[model_name].done():
-                 proxy_thread._runner_ready_futures[model_name].set_exception(e)
-                 del proxy_thread._runner_ready_futures[model_name]
+            if model_name in proxy_server._runner_ready_futures and not proxy_server._runner_ready_futures[model_name].done():
+                 proxy_server._runner_ready_futures[model_name].set_exception(e)
+                 del proxy_server._runner_ready_futures[model_name]
             return {"error": {"message": f"Error starting runner for model '{model_name}': {e}", "type": "runner_startup_error"}}
 
     else:
         logging.debug(f"Runner for {model_name} is already running on port {port}.")
         # If it was running, ensure its future is marked as done with the port
         # This handles cases where the proxy restarts but the runner is still alive
-        if model_name not in proxy_thread._runner_ready_futures or not proxy_thread._runner_ready_futures[model_name].done():
+        if model_name not in proxy_server._runner_ready_futures or not proxy_server._runner_ready_futures[model_name].done():
              logging.debug(f"Creating completed future for already running runner {model_name}")
              future = asyncio.Future()
              future.set_result(port)
-             proxy_thread._runner_ready_futures[model_name] = future
+             proxy_server._runner_ready_futures[model_name] = future
              # No need for timer cleanup here, as it's already running.
              # The future will be removed if the runner stops later.
 
@@ -407,12 +407,13 @@ async def _dynamic_route_v1_request_generator(
     prompts_logger = getattr(request.app.state, 'prompts_logger', logging.getLogger())
     proxy_thread_instance = getattr(request.app.state, 'proxy_thread_instance', None)
 
-    if not isinstance(proxy_thread_instance, FastAPIProxyThread):
-        logging.error("proxy_thread_instance not found or not of type FastAPIProxyThread in app.state")
-        error_payload = {"error": {"message": "Internal server error: Proxy thread not configured.", "type": "internal_error"}}
+    if not proxy_thread_instance:
+        logging.error("proxy_thread_instance not found in app.state")
+        error_payload = {"error": {"message": "Internal server error: Proxy not configured.", "type": "internal_error"}}
         yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
         return
-    proxy_thread: FastAPIProxyThread = proxy_thread_instance
+    # The instance is the LMStudioProxyServer itself.
+    proxy_server = proxy_thread_instance
 
     try:
         if body is None or body_bytes is None:
@@ -494,33 +495,33 @@ async def _dynamic_route_v1_request_generator(
         logging.info(f"Runner for {model_name} not running. Requesting startup.")
         startup_timeout = 240
         try:
-            if model_name not in proxy_thread._runner_ready_futures or proxy_thread._runner_ready_futures[model_name].done():
-                 proxy_thread._runner_ready_futures[model_name] = request_runner_start_callback(model_name)
+            if model_name not in proxy_server._runner_ready_futures or proxy_server._runner_ready_futures[model_name].done():
+                 proxy_server._runner_ready_futures[model_name] = request_runner_start_callback(model_name)
 
-            port = await asyncio.wait_for(proxy_thread._runner_ready_futures[model_name], timeout=startup_timeout)
+            port = await asyncio.wait_for(proxy_server._runner_ready_futures[model_name], timeout=startup_timeout)
             logging.info(f"Runner for {model_name} is ready on port {port} after startup.")
         except asyncio.TimeoutError:
             logging.error(f"Timeout waiting for runner {model_name} to start.")
-            if model_name in proxy_thread._runner_ready_futures and not proxy_thread._runner_ready_futures[model_name].done():
-                 proxy_thread._runner_ready_futures[model_name].cancel()
-                 del proxy_thread._runner_ready_futures[model_name]
+            if model_name in proxy_server._runner_ready_futures and not proxy_server._runner_ready_futures[model_name].done():
+                 proxy_server._runner_ready_futures[model_name].cancel()
+                 del proxy_server._runner_ready_futures[model_name]
             error_payload = {"error": {"message": f"Timeout starting runner for model '{model_name}'.", "type": "runner_startup_error"}}
             yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
             return
         except Exception as e:
             logging.error(f"Error during runner startup for {model_name}: {e}\n{traceback.format_exc()}")
-            if model_name in proxy_thread._runner_ready_futures and not proxy_thread._runner_ready_futures[model_name].done():
-                 proxy_thread._runner_ready_futures[model_name].set_exception(e)
-                 del proxy_thread._runner_ready_futures[model_name]
+            if model_name in proxy_server._runner_ready_futures and not proxy_server._runner_ready_futures[model_name].done():
+                 proxy_server._runner_ready_futures[model_name].set_exception(e)
+                 del proxy_server._runner_ready_futures[model_name]
             error_payload = {"error": {"message": f"Error starting runner for model '{model_name}': {e}", "type": "runner_startup_error"}}
             yield f'data: {json.dumps(error_payload)}\n\n'.encode('utf-8')
             return
     else:
         logging.debug(f"Runner for {model_name} is already running on port {port}.")
-        if model_name not in proxy_thread._runner_ready_futures or not proxy_thread._runner_ready_futures[model_name].done():
+        if model_name not in proxy_server._runner_ready_futures or not proxy_server._runner_ready_futures[model_name].done():
              future = asyncio.Future()
              future.set_result(port)
-             proxy_thread._runner_ready_futures[model_name] = future
+             proxy_server._runner_ready_futures[model_name] = future
 
     path_to_use = target_path if target_path is not None else request.url.path
     target_url = f"http://127.0.0.1:{port}{path_to_use}"

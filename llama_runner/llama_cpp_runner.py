@@ -1,5 +1,4 @@
 import asyncio
-import subprocess
 import logging
 import re
 import collections  # Import collections
@@ -131,7 +130,7 @@ class LlamaCppRunner(QObject):
                 try:
                     self.process.terminate()
                     await asyncio.wait_for(self.process.wait(), timeout=5) # type: ignore
-                except:
+                except Exception:
                     self.process.kill()
                 self.process = None # type: ignore
             elif self.process and self.process.returncode is not None:
