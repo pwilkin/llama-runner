@@ -65,8 +65,13 @@ class LlamaCppRunner:
                 self.on_port_ready(self.model_name, self.port)
 
             if self.process:
-                await self.process.wait()
-                logging.info(f"Process for {self.model_name} exited with code {self.process.returncode}.")
+                return_code = await self.process.wait()
+                logging.info(f"Process for {self.model_name} exited with code {return_code}.")
+                if return_code != 0:
+                    error_msg = f"Llama.cpp server for {self.model_name} exited unexpectedly with code {return_code}."
+                    logging.error(error_msg)
+                    if self.on_error:
+                        self.on_error(self.model_name, error_msg, self.get_output_buffer())
 
         except Exception as e:
             error_msg = f"Error running llama.cpp server: {e}"
