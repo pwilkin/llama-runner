@@ -86,7 +86,6 @@ def main():
 
             loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(shutdown_handler()))
 
-            loop.create_task(hsm.llama_runner_manager._event_processor())
             loop.run_forever()
         else:
             main_window = MainWindow()
@@ -99,7 +98,6 @@ def main():
 
             loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(shutdown_handler()))
 
-            loop.create_task(main_window.llama_runner_manager._event_processor())
             main_window.show()
             loop.run_forever()
 
