@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from llama_runner.llama_runner_manager import LlamaRunnerManager
-from llama_runner.llama_runner_thread import RunnerStoppedEvent, PortReadyEvent
 
 # Mock models and runtimes config
 MODELS_CONFIG = {
@@ -36,64 +35,59 @@ def manager():
 
 @pytest.mark.asyncio
 @patch('os.path.exists', return_value=True)
-@patch('llama_runner.llama_runner_manager.LlamaRunnerThread')
-async def test_runner_stop_and_wait_logic(MockLlamaRunnerThread, mock_exists, manager):
+@patch('llama_runner.llama_runner_manager.LlamaCppRunner')
+async def test_runner_stop_and_wait_logic(MockLlamaCppRunner, mock_exists, manager):
     """
     Tests that the manager waits for a running process to stop before starting a new one.
-    This test mocks the thread to avoid real threading/event loop issues and focuses on the manager's logic.
+    This test mocks the LlamaCppRunner to focus on the manager's logic.
     """
-    # Start the manager's event processor
-    processor = asyncio.create_task(manager._event_processor())
+    # --- Setup: Mock LlamaCppRunner instances ---
+    mock_runner_1 = MagicMock()
+    mock_runner_1.run = MagicMock(return_value=asyncio.sleep(10)) # Simulate a long running process
+    mock_runner_1.stop = MagicMock(return_value=asyncio.sleep(0)) # stop is a coroutine
 
-    # --- Setup: Mock a running thread ---
-    mock_thread_1 = MagicMock()
-    mock_thread_1.is_alive.return_value = True
-    manager.llama_runner_threads['model-1'] = mock_thread_1
+    mock_runner_2 = MagicMock()
+    mock_runner_2.run = MagicMock(return_value=asyncio.sleep(10))
 
-    # --- Act ---
-    # Create a task to request the new runner. This will block until the old one is "stopped".
-    request_task = asyncio.create_task(manager.request_runner_start('model-2'))
+    # Configure the mock to return different instances for model-1 and model-2
+    MockLlamaCppRunner.side_effect = [mock_runner_1, mock_runner_2]
 
-    # Give the request_task a moment to start and create the stop_future
-    await asyncio.sleep(0.1)
+    # --- Act: Start the first runner ---
+    start_task_1 = asyncio.create_task(manager.request_runner_start('model-1'))
+    await asyncio.sleep(0.1) # allow task to start
 
-    # Check that the stop future exists
-    assert 'model-1' in manager._runner_stop_futures
+    # Manually trigger the port ready callback to resolve the future
+    manager.on_port_ready('model-1', 8888)
+    port1 = await start_task_1
 
-    # Simulate the "stopped" event for the first model, which should unblock the request_task
-    await manager.event_queue.put(RunnerStoppedEvent('model-1'))
+    assert port1 == 8888
+    assert 'model-1' in manager.runners
+    assert 'model-1' in manager.runner_tasks
 
-    # Now, await the completion of the request task
-    # It still needs a port to be "ready" to fully return
-    # Let's simulate that too.
+    # --- Act: Start the second runner, which should stop the first ---
+    start_task_2 = asyncio.create_task(manager.request_runner_start('model-2'))
+    await asyncio.sleep(0.1) # allow task to start
 
-    # Wait for the startup future for model-2 to be created
-    for _ in range(10):
-        if 'model-2' in manager._runner_startup_futures:
-            break
-        await asyncio.sleep(0.1)
-    assert 'model-2' in manager._runner_startup_futures
-
-    # Simulate the port ready event for model-2
-    await manager.event_queue.put(PortReadyEvent('model-2', 8888))
-
-    # Await the request task
-    port2 = await request_task
+    # Manually trigger the port ready callback for the second model
+    manager.on_port_ready('model-2', 9999)
+    port2 = await start_task_2
 
     # --- Assert ---
-    assert port2 == 8888
-    mock_thread_1.stop.assert_called_once()
-    MockLlamaRunnerThread.assert_called_with(
-        model_name='model-2',
-        model_path='/fake/path/model2.gguf',
-        event_queue=manager.event_queue,
-        llama_cpp_runtime='dummy-server',
-        **{}
-    )
+    assert port2 == 9999
+
+    # Check that the first runner was stopped
+    mock_runner_1.stop.assert_called_once()
+
+    # Check that the first runner's task is no longer in the manager
+    assert 'model-1' not in manager.runners
+    assert 'model-1' not in manager.runner_tasks
+
+    # Check that the second runner is now managed
+    assert 'model-2' in manager.runners
+    assert 'model-2' in manager.runner_tasks
 
     # --- Cleanup ---
-    processor.cancel()
-    try:
-        await processor
-    except asyncio.CancelledError:
-        pass
+    # Stop the remaining runner
+    await manager.stop_all_llama_runners_async()
+    assert not manager.runners
+    assert not manager.runner_tasks

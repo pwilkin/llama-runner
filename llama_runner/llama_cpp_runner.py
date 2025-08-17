@@ -1,10 +1,8 @@
 import asyncio
 import logging
 import re
-import collections  # Import collections
-from typing import Optional
-
-from PySide6.QtCore import QObject, Signal
+import collections
+from typing import Optional, Callable, List
 
 from llama_runner.config_loader import CONFIG_DIR, LOG_FILE
 
@@ -16,11 +14,17 @@ logging.basicConfig(
 )
 
 
-class LlamaCppRunner(QObject):
-    stopped = Signal()  # Define the stopped signal
-
+class LlamaCppRunner:
     def __init__(
-        self, model_name: str, model_path: str, llama_cpp_runtime: str = None, **kwargs # type: ignore
+        self,
+        model_name: str,
+        model_path: str,
+        llama_cpp_runtime: str = None,
+        on_started: Callable[[str], None] = None,
+        on_stopped: Callable[[str], None] = None,
+        on_error: Callable[[str, str, List[str]], None] = None,
+        on_port_ready: Callable[[str, int], None] = None,
+        **kwargs,
     ):
         """
         Initializes the LlamaCppRunner.
@@ -30,22 +34,48 @@ class LlamaCppRunner(QObject):
             model_path (str): The full path to the model file.
             llama_cpp_runtime (str, optional): The path to the llama-server executable.
                 Defaults to None, which uses the llama-server from the PATH.
+            on_started (Callable): Callback for when the runner starts.
+            on_stopped (Callable): Callback for when the runner stops.
+            on_error (Callable): Callback for when an error occurs.
+            on_port_ready (Callable): Callback for when the server port is ready.
             **kwargs: Additional arguments to pass to llama-server.
         """
-        super().__init__()  # Call QObject constructor
         self.model_name = model_name
         self.model_path = model_path
         self.llama_cpp_runtime = llama_cpp_runtime or "llama-server"
+        self.on_started = on_started
+        self.on_stopped = on_stopped
+        self.on_error = on_error
+        self.on_port_ready = on_port_ready
         self.kwargs = kwargs
         self.process: Optional[asyncio.subprocess.Process] = None
-        self.startup_pattern = re.compile(
-            r"main: server is listening on"
-        )  # Regex to detect startup
-        self.alt_startup_pattern = re.compile("HTTP server listening")  # ik.llama
-        self.port = None  # Dynamically assigned port
-        self._output_buffer = collections.deque(
-            maxlen=10
-        )  # Store the last 10 lines read from stdout
+        self.startup_pattern = re.compile(r"main: server is listening on")
+        self.alt_startup_pattern = re.compile("HTTP server listening")
+        self.port = None
+        self._output_buffer = collections.deque(maxlen=100)
+
+    async def run(self):
+        try:
+            if self.on_started:
+                self.on_started(self.model_name)
+
+            await self.start()
+
+            if self.port is not None and self.on_port_ready:
+                self.on_port_ready(self.model_name, self.port)
+
+            if self.process:
+                await self.process.wait()
+                logging.info(f"Process for {self.model_name} exited with code {self.process.returncode}.")
+
+        except Exception as e:
+            error_msg = f"Error running llama.cpp server: {e}"
+            logging.error(error_msg, exc_info=True)
+            if self.on_error:
+                self.on_error(self.model_name, error_msg, self.get_output_buffer())
+        finally:
+            if self.on_stopped:
+                self.on_stopped(self.model_name)
 
     async def start(self):
         """
@@ -272,9 +302,7 @@ class LlamaCppRunner(QObject):
                 print(f"Error during process termination for {self.model_name}: {e}")
                 logging.error(f"Exception during termination of PID: {self.process.pid} for {self.model_name}: {e}")
             finally:
-                # Emit a signal to notify the GUI that the server has stopped
-                logging.info(f"Emitting stopped signal for {self.model_name} (PID: {self.process.pid if self.process else 'N/A'}). Final return code: {self.process.returncode if self.process else 'N/A'}")
-                self.stopped.emit()
+                logging.info(f"Process {self.model_name} (PID: {self.process.pid if self.process else 'N/A'}) has been stopped. Final return code: {self.process.returncode if self.process else 'N/A'}")
         elif self.process and self.process.returncode is not None:
             print(
                 f"llama.cpp server for {self.model_name} was already stopped (code {self.process.returncode})."
