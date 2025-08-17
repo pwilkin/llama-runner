@@ -27,8 +27,8 @@ class HeadlessServiceManager:
         logger.info("Initializing services for headless mode...")
         self.llama_runner_manager = LlamaRunnerManager(
             models=self.models_specific_config,
-            llama_runtimes=self.app_config.get(\"llama-runtimes\", {}),
-            default_runtime=self.app_config.get(\"default_runtime\", \"llama-server\"),
+            llama_runtimes=self.app_config.get("llama-runtimes", {}),
+            default_runtime=self.app_config.get("default_runtime", "llama-server"),
             on_started=lambda name: self._on_runner_event(f"Started {name}"),
             on_stopped=lambda name: self._on_runner_event(f"Stopped {name}"),
             on_error=self._on_runner_error,
@@ -39,8 +39,8 @@ class HeadlessServiceManager:
         )
         logger.info("LlamaRunnerManager initialized.")
 
-        proxies_config = self.app_config.get(\"proxies\", {})
-        if proxies_config.get(\"ollama\", {}).get(\"enabled\", True):
+        proxies_config = self.app_config.get("proxies", {})
+        if proxies_config.get("ollama", {}).get("enabled", True):
             logger.info("Ollama Proxy is enabled. Creating server...")
             self.ollama_proxy = OllamaProxyServer(
                 all_models_config=self.models_specific_config,
@@ -48,11 +48,11 @@ class HeadlessServiceManager:
                 request_runner_start_callback=self.llama_runner_manager.request_runner_start,
             )
 
-        if proxies_config.get(\"lmstudio\", {}).get(\"enabled\", True):
+        if proxies_config.get("lmstudio", {}).get("enabled", True):
             logger.info("LM Studio Proxy is enabled. Creating server...")
             self.lmstudio_proxy = LMStudioProxyServer(
                 all_models_config=self.models_specific_config,
-                runtimes_config=self.app_config.get(\"llama-runtimes\", {}),
+                runtimes_config=self.app_config.get("llama-runtimes", {}),
                 is_model_running_callback=self.llama_runner_manager.is_llama_runner_running,
                 get_runner_port_callback=self.llama_runner_manager.get_runner_port,
                 request_runner_start_callback=self.llama_runner_manager.request_runner_start,
