@@ -1004,6 +1004,7 @@ class LMStudioProxyServer:
         self.request_runner_start_callback = request_runner_start_callback
         self._uvicorn_server = None
         self.task = None
+        self._runner_ready_futures: Dict[str, asyncio.Future] = {}
         # The callbacks are not used by the server itself but are passed for consistency
         # They will be used by the bridge if needed.
 
