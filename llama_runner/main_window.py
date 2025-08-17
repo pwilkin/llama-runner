@@ -1,18 +1,15 @@
 import os
 import sys
 import subprocess
-import logging
 import asyncio
 from typing import Optional, Dict, List
 
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                               QPushButton, QListWidget, QStackedWidget)
-from PySide6.QtCore import Slot, Qt, Signal
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QStackedWidget)
+from PySide6.QtCore import Slot, Signal, QCoreApplication
 
 from llama_runner.config_loader import load_config
 from llama_runner.lmstudio_proxy_thread import LMStudioProxyServer
 from llama_runner.ollama_proxy_thread import OllamaProxyServer
-from llama_runner import gguf_metadata
 from llama_runner.model_status_widget import ModelStatusWidget
 from llama_runner.llama_runner_manager import LlamaRunnerManager
 from llama_runner.error_output_dialog import ErrorOutputDialog
@@ -86,7 +83,7 @@ class MainWindow(QWidget):
             status_widget = ModelStatusWidget(model_name)
             self.model_status_stack.addWidget(status_widget)
             self.model_status_widgets[model_name] = status_widget
-            status_widget.start_button.clicked.connect(lambda checked, name=model_name: self.llama_runner_manager.request_runner_start(name))
+            status_widget.start_button.clicked.connect(lambda checked, name=model_name: asyncio.create_task(self.llama_runner_manager.request_runner_start(name)))
             status_widget.stop_button.clicked.connect(lambda checked, name=model_name: self.llama_runner_manager.stop_llama_runner(name))
 
         self.model_list_widget.currentItemChanged.connect(self.on_model_selection_changed)
@@ -101,8 +98,12 @@ class MainWindow(QWidget):
 
     async def stop_all_services(self):
         tasks_to_cancel = []
-        if self.ollama_proxy_server: self.ollama_proxy_server.stop(); tasks_to_cancel.append(self.ollama_proxy_server.task)
-        if self.lmstudio_proxy_server: self.lmstudio_proxy_server.stop(); tasks_to_cancel.append(self.lmstudio_proxy_server.task)
+        if self.ollama_proxy_server:
+            self.ollama_proxy_server.stop()
+            tasks_to_cancel.append(self.ollama_proxy_server.task)
+        if self.lmstudio_proxy_server:
+            self.lmstudio_proxy_server.stop()
+            tasks_to_cancel.append(self.lmstudio_proxy_server.task)
 
         await self.llama_runner_manager.stop_all_llama_runners_async()
 
