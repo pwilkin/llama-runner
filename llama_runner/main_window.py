@@ -68,6 +68,11 @@ class MainWindow(QWidget):
                 request_runner_start_callback=self.llama_runner_manager.request_runner_start,
             )
 
+        if self.lmstudio_proxy_server:
+            self.lmstudio_proxy_server.task = asyncio.create_task(self.lmstudio_proxy_server.start())
+        if self.ollama_proxy_server:
+            self.ollama_proxy_server.task = asyncio.create_task(self.ollama_proxy_server.start())
+
     def _setup_ui(self):
         self.main_layout = QVBoxLayout(self)
         self.top_layout = QHBoxLayout()
