@@ -987,166 +987,46 @@ logging.info("Updated dynamic routing handlers for /v1/chat/completions, /v1/com
 # --- End add routes ---
 
 
-class FastAPIProxyThread(QThread): # Renamed class
-    """
-    QThread to run the FastAPI proxy in a separate thread. # Updated description
-    Handles LM Studio API emulation and runner management requests.
-    """
+class LMStudioProxyServer:
     def __init__(self,
-                 all_models_config: Dict[str, Dict[str, Any]], # Renamed models_config
-                 runtimes_config: Dict[str, Dict[str, Any]], # Added runtimes_config
+                 all_models_config: Dict[str, Any],
+                 runtimes_config: Dict[str, Any],
                  is_model_running_callback: Callable[[str], bool],
                  get_runner_port_callback: Callable[[str], Optional[int]],
-                 request_runner_start_callback: Callable[[str], asyncio.Future], # Callback now returns Future
-                 prompt_logging_enabled: bool, # Add prompt logging flag
-                 prompts_logger: logging.Logger, # Add prompts logger instance
-                 api_key: Optional[str] = None): # Changed to Optional[str]
-        super().__init__()
-        self.all_models_config = all_models_config # Store all_models_config
-        self.runtimes_config = runtimes_config # Store runtimes_config
+                 request_runner_start_callback: Callable[[str], asyncio.Future],
+                 on_runner_port_ready: Callable[[str, int], None],
+                 on_runner_stopped: Callable[[str], None]):
+        self.all_models_config = all_models_config
+        self.runtimes_config = runtimes_config
         self.is_model_running_callback = is_model_running_callback
         self.get_runner_port_callback = get_runner_port_callback
-        self.request_runner_start_callback = request_runner_start_callback # Store the callback
-        self.prompt_logging_enabled = prompt_logging_enabled # Store the flag
-        self.prompts_logger = prompts_logger # Store the logger instance
-        self.api_key = api_key
-        self.is_running = False
+        self.request_runner_start_callback = request_runner_start_callback
         self._uvicorn_server = None
-        self._runner_ready_futures: Dict[str, asyncio.Future] = {}
+        self.task = None
+        # The callbacks are not used by the server itself but are passed for consistency
+        # They will be used by the bridge if needed.
 
-    @Slot(str, int)
-    def on_runner_port_ready(self, model_name: str, port: int):
-        """Slot to handle runner_port_ready_for_proxy signal from MainWindow."""
-        logging.debug(f"Proxy thread received runner_port_ready for {model_name} on port {port}")
-        # When a runner is ready, resolve its corresponding Future in our local dictionary
-        if model_name in self._runner_ready_futures and not self._runner_ready_futures[model_name].done():
-            logging.debug(f"Resolving local runner_ready_future for {model_name} with port {port}")
-            self._runner_ready_futures[model_name].set_result(port)
-        elif model_name in self._runner_ready_futures and self._runner_ready_futures[model_name].done():
-             logging.warning(f"Received runner_port_ready for {model_name}, but local Future was already done.")
-        else:
-             logging.info(f"Received runner_port_ready for {model_name}, but no pending local Future found. This can occur if the runner was started outside the proxy's request flow or the Future was already resolved. No action needed.")
+    async def start(self):
+        app.state.all_models_config = self.all_models_config
+        app.state.runtimes_config = self.runtimes_config
+        app.state.is_model_running_callback = self.is_model_running_callback
+        app.state.get_runner_port_callback = self.get_runner_port_callback
+        app.state.request_runner_start_callback = self.request_runner_start_callback
+        app.state.proxy_thread_instance = self  # Maintain compatibility with handlers
 
+        uvicorn_config = uvicorn.Config(app, host="127.0.0.1", port=1234, log_level="info")
+        self._uvicorn_server = uvicorn.Server(uvicorn_config)
 
-    @Slot(str)
-    def on_runner_stopped(self, model_name: str):
-        """Slot to handle runner_stopped_for_proxy signal from MainWindow."""
-        logging.debug(f"Proxy thread received runner_stopped for {model_name}")
-        # If a runner stops, cancel or set exception on its Future in our local dictionary
-        if model_name in self._runner_ready_futures:
-             if not self._runner_ready_futures[model_name].done():
-                 logging.debug(f"Setting exception on local runner_ready_future for {model_name} due to stop.")
-                 self._runner_ready_futures[model_name].set_exception(RuntimeError(f"Runner for {model_name} stopped unexpectedly."))
-             # Remove the future from the local dictionary
-             del self._runner_ready_futures[model_name]
-             logging.debug(f"Cleaned up local runner_ready_future for {model_name}")
-        else:
-             logging.debug(f"Received runner_stopped for {model_name}, but no local Future found.")
-
-
-    def run(self):
-        """
-        Runs the FastAPI proxy in the thread using Uvicorn.
-        """
-        self.is_running = True
+        logging.info("LM Studio Proxy listening on http://127.0.0.1:1234")
         try:
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
-
-            # --- Set the proxy thread instance on the app state ---
-            # This allows the standalone handlers to access the thread's local state (like _runner_ready_futures)
-            app.state.proxy_thread_instance = self
-            # --- End set instance ---
-
-            self.loop.run_until_complete(self.run_async())
-        except Exception as e:
-            logging.error(f"Unexpected error in FastAPIProxyThread run: {e}\n{traceback.format_exc()}")
-        finally:
-            self.is_running = False
-            # Clean up the temporary config file (no longer generated)
-            # if self._temp_config_path and os.path.exists(self._temp_config_path):
-            #      try:
-            #          os.unlink(self._temp_config_path)
-            #          logging.info(f"Cleaned up temporary LiteLLM config file: {self._temp_config_path}")
-            #      except OSError as e:
-            #          logging.error(f"Error cleaning up temporary LiteLLM config file {self._temp_config_path}: {e}")
-            # self._temp_config_path = None # Clear the path
-
-            # Log proxy stop using the prompts logger if enabled
-            if self.prompt_logging_enabled:
-                 self.prompts_logger.info("FastAPI Proxy thread stopping.")
-
-            # --- Clean up the proxy thread instance from app state ---
-            if hasattr(app.state, 'proxy_thread_instance'):
-                 del app.state.proxy_thread_instance
-            # --- End cleanup ---
-
-            if hasattr(self, 'loop') and self.loop.is_running():
-                 self.loop.stop()
-            if hasattr(self, 'loop') and not self.loop.is_closed():
-                 self.loop.close()
-
-
-    async def run_async(self):
-        """
-        Asynchronous part of the proxy runner.
-        Starts the Uvicorn server for the FastAPI app.
-        """
-        print("Starting FastAPI Proxy...")
-        try:
-            # LiteLLM config generation removed.
-            # The FastAPI app 'app' is already created at the module level.
-            # Routes are added at the module level.
-
-            # 4. Start the proxy embedded via Uvicorn
-            # Set state on the global app instance BEFORE creating the server
-            # This state will be accessible by the standalone handler functions
-            app.state.all_models_config = self.all_models_config # Pass all_models_config
-            app.state.runtimes_config = self.runtimes_config # Pass runtimes_config
-            app.state.is_model_running_callback = self.is_model_running_callback
-            app.state.get_runner_port_callback = self.get_runner_port_callback # Pass the new callback
-            app.state.request_runner_start_callback = self.request_runner_start_callback # Pass the new callback
-            app.state.prompt_logging_enabled = self.prompt_logging_enabled # Set prompt logging flag on state
-            app.state.prompts_logger = self.prompts_logger # Set prompts logger on state
-            # Extract metadata for all models and store it in app.state.models_metadata
-            # Note: get_all_models_lmstudio_format expects the main models config (all_models_config)
-            app.state.models_metadata = gguf_metadata.get_all_models_lmstudio_format(
-                self.all_models_config, self.is_model_running_callback
-            )
-
-            # Use port 1234 as required
-            uvicorn_config = uvicorn.Config(app, host="127.0.0.1", port=1234, reload=False)
-            self._uvicorn_server = uvicorn.Server(uvicorn_config)
-
-            print("FastAPI Proxy listening on http://127.0.0.1:1234")
-            logging.info("FastAPI Proxy listening on http://127.0.0.1:1234")
-
-            # Log proxy start using the prompts logger if enabled
-            if self.prompt_logging_enabled:
-                 self.prompts_logger.info("FastAPI Proxy thread started and listening on http://127.0.0.1:1234")
-
-            # This call is blocking until the server stops
             await self._uvicorn_server.serve()
-
-        except Exception as e:
-            print(f"Error starting FastAPI Proxy: {e}")
-            logging.error(f"Error starting FastAPI Proxy: {e}\n{traceback.format_exc()}")
-            # Emit error signal if needed
-            # self.error.emit(str(e))
+        except asyncio.CancelledError:
+            logging.info("LM Studio Proxy server task cancelled.")
         finally:
-            # Cleanup happens in run()'s finally block now
-            print("FastAPI Proxy stopped.")
-            logging.info("FastAPI Proxy stopped.")
-
+            logging.info("LM Studio Proxy server shut down.")
 
     def stop(self):
-        """
-        Signals the FastAPI proxy thread to stop.
-        """
-        self.is_running = False
         if self._uvicorn_server:
             self._uvicorn_server.should_exit = True
-            # Note: Stopping uvicorn gracefully can be tricky in an embedded context.
-            # This might not immediately stop the serve() call.
-            # A more robust stop might involve sending a signal or using a shutdown event.
-            # For now, setting should_exit is the standard uvicorn way.
+        if self.task:
+            self.task.cancel()

@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
 from PySide6.QtCore import Slot, Qt, QEvent
 
 from llama_runner.config_loader import load_config
-from llama_runner.lmstudio_proxy_thread import FastAPIProxyThread
-from llama_runner.ollama_proxy_thread import OllamaProxyThread
+from llama_runner.lmstudio_proxy_thread import LMStudioProxyServer
+from llama_runner.ollama_proxy_thread import OllamaProxyServer
 from llama_runner import gguf_metadata
 
 from llama_runner.model_status_widget import ModelStatusWidget
@@ -61,8 +61,8 @@ class MainWindow(QWidget):
             else:
                 logging.warning(f"Model '{model_name}' has no 'model_path' in config. Skipping metadata caching.")
 
-        self.fastapi_proxy_thread: Optional[FastAPIProxyThread] = None
-        self.ollama_proxy_thread: Optional[OllamaProxyThread] = None
+        self.lmstudio_proxy_server: Optional[LMStudioProxyServer] = None
+        self.ollama_proxy_server: Optional[OllamaProxyServer] = None
 
         self.main_layout = QVBoxLayout() # Renamed self.layout to self.main_layout
         self.top_layout = QHBoxLayout()
@@ -142,19 +142,24 @@ class MainWindow(QWidget):
         self.llama_runner_manager.set_concurrent_runners_limit(self.concurrent_runners_limit)
 
 
-        # --- Start the FastAPI Proxy (for LM Studio) automatically if enabled ---
+        # --- Create Proxy Server instances ---
         if self.lmstudio_proxy_enabled:
-            self.start_fastapi_proxy()
-        else:
-            print("LM Studio compatible proxy (FastAPI) is disabled in config.")
-            self.fastapi_proxy_thread = None # Ensure it's None if not started
+            self.lmstudio_proxy_server = LMStudioProxyServer(
+                all_models_config=self.models,
+                runtimes_config=self.llama_runtimes,
+                is_model_running_callback=self.llama_runner_manager.is_llama_runner_running,
+                get_runner_port_callback=self.llama_runner_manager.get_runner_port,
+                request_runner_start_callback=self.llama_runner_manager.request_runner_start,
+                on_runner_port_ready=self.on_runner_port_ready,
+                on_runner_stopped=self.on_runner_stopped,
+            )
 
-        # --- Start the Ollama Proxy automatically if enabled ---
         if self.ollama_proxy_enabled:
-            self.start_ollama_proxy()
-        else:
-            print("Ollama proxy is disabled in config.")
-            self.ollama_proxy_thread = None # Ensure it's None if not started
+            self.ollama_proxy_server = OllamaProxyServer(
+                all_models_config=self.models,
+                get_runner_port_callback=self.llama_runner_manager.get_runner_port,
+                request_runner_start_callback=self.llama_runner_manager.request_runner_start,
+            )
 
 
         self.setStyleSheet(self.styleSheet() + """
@@ -193,15 +198,10 @@ class MainWindow(QWidget):
             # The qasync loop in main.py will handle the async cleanup.
             self.llama_runner_manager.stop_all_llama_runners_async()
 
-            # Stop and wait for FastAPI proxy thread
-            if self.fastapi_proxy_thread and self.fastapi_proxy_thread.is_alive():
-                self.fastapi_proxy_thread.stop()
-                self.fastapi_proxy_thread.join()
-
-            # Stop and wait for Ollama proxy thread
-            if self.ollama_proxy_thread and self.ollama_proxy_thread.is_alive():
-                self.ollama_proxy_thread.stop()
-                self.ollama_proxy_thread.join()
+            if self.lmstudio_proxy_server:
+                self.lmstudio_proxy_server.stop()
+            if self.ollama_proxy_server:
+                self.ollama_proxy_server.stop()
 
         except KeyboardInterrupt:
             print("KeyboardInterrupt received during shutdown. Attempting best-effort thread cleanup...")
@@ -263,10 +263,8 @@ class MainWindow(QWidget):
             widget.update_status("Not Running")
             widget.update_port("N/A")
             widget.set_buttons_enabled(True, False)
-        if self.fastapi_proxy_thread:
-            self.fastapi_proxy_thread.on_runner_stopped(model_name)
-        if self.ollama_proxy_thread:
-            self.ollama_proxy_thread.on_runner_stopped(model_name)
+        # The new proxy servers don't need to be notified this way.
+        # Their internal logic handles runner state.
 
     def on_runner_error(self, model_name: str, message: str, output_buffer: list):
         from llama_runner.error_output_dialog import ErrorOutputDialog
@@ -289,64 +287,7 @@ class MainWindow(QWidget):
             widget.update_port(port)
             widget.update_status("Running")
             widget.set_buttons_enabled(False, True)
-        if self.fastapi_proxy_thread:
-            self.fastapi_proxy_thread.on_runner_port_ready(model_name, port)
-        if self.ollama_proxy_thread:
-            self.ollama_proxy_thread.on_runner_port_ready(model_name, port)
-
-    # --- Proxy Management ---
-
-    def start_fastapi_proxy(self):
-        if self.fastapi_proxy_thread is not None and self.fastapi_proxy_thread.is_alive():
-            print("FastAPI Proxy is already running.")
-            return
-
-        print("Starting FastAPI Proxy (for LM Studio)...")
-        self.fastapi_proxy_thread = FastAPIProxyThread(
-            all_models_config=self.models,
-            runtimes_config=self.llama_runtimes,
-            is_model_running_callback=self.llama_runner_manager.is_llama_runner_running,
-            get_runner_port_callback=self.llama_runner_manager.get_runner_port,
-            request_runner_start_callback=self.llama_runner_manager.request_runner_start,
-            prompt_logging_enabled=self.prompt_logging_enabled,
-            prompts_logger=self.prompts_logger,
-        )
-        self.runner_port_ready_for_proxy.connect(self.fastapi_proxy_thread.on_runner_port_ready)
-        self.runner_stopped_for_proxy.connect(self.fastapi_proxy_thread.on_runner_stopped)
-        self.fastapi_proxy_thread.start()
-
-    def start_ollama_proxy(self):
-        if self.ollama_proxy_thread is not None and self.ollama_proxy_thread.is_alive():
-            print("Ollama Proxy is already running.")
-            return
-
-        print("Starting Ollama Proxy...")
-        self.ollama_proxy_thread = OllamaProxyThread(
-            all_models_config=self.models,
-            runtimes_config=self.llama_runtimes,
-            is_model_running_callback=self.llama_runner_manager.is_llama_runner_running,
-            get_runner_port_callback=self.llama_runner_manager.get_runner_port,
-            request_runner_start_callback=self.llama_runner_manager.request_runner_start,
-            prompt_logging_enabled=self.prompt_logging_enabled,
-            prompts_logger=self.prompts_logger,
-        )
-        self.runner_port_ready_for_proxy.connect(self.ollama_proxy_thread.on_runner_port_ready)
-        self.runner_stopped_for_proxy.connect(self.ollama_proxy_thread.on_runner_stopped)
-        self.ollama_proxy_thread.start()
-
-    def stop_fastapi_proxy(self):
-        if self.fastapi_proxy_thread and self.fastapi_proxy_thread.is_alive():
-            print("Stopping FastAPI Proxy...")
-            self.fastapi_proxy_thread.stop()
-        else:
-            print("FastAPI Proxy is not running.")
-
-    def stop_ollama_proxy(self):
-        if self.ollama_proxy_thread and self.ollama_proxy_thread.is_alive():
-            print("Stopping Ollama Proxy...")
-            self.ollama_proxy_thread.stop()
-        else:
-            print("Ollama Proxy is not running.")
+        # The new proxy servers don't need to be notified this way.
 
 
     # --- Callback methods for LlamaRunnerManager ---
