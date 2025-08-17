@@ -79,7 +79,7 @@ class LlamaRunnerManager:
             self.on_port_ready(name, port)
 
         def _on_error_wrapper(name, message, output_buffer):
-            if name in self._runner_startup_futures:
+            if name in self._runner_startup_futures and not self._runner_startup_futures[name].done():
                 self._runner_startup_futures[name].set_exception(RuntimeError(message))
             self.on_error(name, message, output_buffer)
 
