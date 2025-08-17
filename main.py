@@ -99,6 +99,7 @@ def main():
             loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(shutdown_handler()))
 
             main_window.show()
+            loop.call_soon(main_window.start_services)
             loop.run_forever()
 
     except Exception as e:

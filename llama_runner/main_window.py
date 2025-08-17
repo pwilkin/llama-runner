@@ -68,6 +68,7 @@ class MainWindow(QWidget):
                 request_runner_start_callback=self.llama_runner_manager.request_runner_start,
             )
 
+    def start_services(self):
         if self.lmstudio_proxy_server:
             self.lmstudio_proxy_server.task = asyncio.create_task(self.lmstudio_proxy_server.start())
         if self.ollama_proxy_server:
@@ -89,7 +90,7 @@ class MainWindow(QWidget):
             self.model_status_stack.addWidget(status_widget)
             self.model_status_widgets[model_name] = status_widget
             status_widget.start_button.clicked.connect(lambda checked, name=model_name: asyncio.create_task(self.llama_runner_manager.request_runner_start(name)))
-            status_widget.stop_button.clicked.connect(lambda checked, name=model_name: self.llama_runner_manager.stop_llama_runner(name))
+            status_widget.stop_button.clicked.connect(lambda checked, name=model_name: asyncio.create_task(self.llama_runner_manager.stop_llama_runner(name)))
 
         self.model_list_widget.currentItemChanged.connect(self.on_model_selection_changed)
         self.edit_config_button = QPushButton("Edit config")
@@ -103,10 +104,10 @@ class MainWindow(QWidget):
 
     async def stop_all_services(self):
         tasks_to_cancel = []
-        if self.ollama_proxy_server:
+        if self.ollama_proxy_server and self.ollama_proxy_server.task:
             self.ollama_proxy_server.stop()
             tasks_to_cancel.append(self.ollama_proxy_server.task)
-        if self.lmstudio_proxy_server:
+        if self.lmstudio_proxy_server and self.lmstudio_proxy_server.task:
             self.lmstudio_proxy_server.stop()
             tasks_to_cancel.append(self.lmstudio_proxy_server.task)
 
