@@ -225,7 +225,7 @@ async def _fetch_non_streaming_v1_response(
             # Store the future locally in the proxy thread instance
             if model_name not in proxy_server._runner_ready_futures or proxy_server._runner_ready_futures[model_name].done():
                  logging.debug(f"Creating new startup future for {model_name}")
-                 proxy_server._runner_ready_futures[model_name] = request_runner_start_callback(model_name)
+                 proxy_server._runner_ready_futures[model_name] = asyncio.create_task(request_runner_start_callback(model_name))
             else:
                  logging.debug(f"Using existing startup future for {model_name}")
 
@@ -496,7 +496,7 @@ async def _dynamic_route_v1_request_generator(
         startup_timeout = 240
         try:
             if model_name not in proxy_server._runner_ready_futures or proxy_server._runner_ready_futures[model_name].done():
-                 proxy_server._runner_ready_futures[model_name] = request_runner_start_callback(model_name)
+                 proxy_server._runner_ready_futures[model_name] = asyncio.create_task(request_runner_start_callback(model_name))
 
             port = await asyncio.wait_for(proxy_server._runner_ready_futures[model_name], timeout=startup_timeout)
             logging.info(f"Runner for {model_name} is ready on port {port} after startup.")
