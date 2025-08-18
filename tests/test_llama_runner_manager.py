@@ -43,11 +43,12 @@ async def test_runner_stop_and_wait_logic(MockLlamaCppRunner, mock_exists, manag
     """
     # --- Setup: Mock LlamaCppRunner instances ---
     mock_runner_1 = MagicMock()
-    mock_runner_1.run = MagicMock(return_value=asyncio.sleep(10)) # Simulate a long running process
+    mock_runner_1.run = MagicMock(return_value=asyncio.sleep(0.1)) # Simulate a long running process
     mock_runner_1.stop = MagicMock(return_value=asyncio.sleep(0)) # stop is a coroutine
 
     mock_runner_2 = MagicMock()
-    mock_runner_2.run = MagicMock(return_value=asyncio.sleep(10))
+    mock_runner_2.run = MagicMock(return_value=asyncio.sleep(0.1))
+    mock_runner_2.stop = MagicMock(return_value=asyncio.sleep(0)) # stop is a coroutine
 
     # Configure the mock to return different instances for model-1 and model-2
     MockLlamaCppRunner.side_effect = [mock_runner_1, mock_runner_2]

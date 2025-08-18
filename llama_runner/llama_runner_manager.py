@@ -79,8 +79,9 @@ class LlamaRunnerManager:
             self.on_port_ready(name, port)
 
         def _on_error_wrapper(name, message, output_buffer):
-            if name in self._runner_startup_futures and not self._runner_startup_futures[name].done():
-                self._runner_startup_futures[name].set_exception(RuntimeError(message))
+            future = self._runner_startup_futures.get(name)
+            if future and not future.done():
+                future.set_exception(RuntimeError(message))
             self.on_error(name, message, output_buffer)
 
         model_config = self.models[model_name]
