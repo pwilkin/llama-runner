@@ -90,6 +90,7 @@ async def test_runner_stop_and_wait_logic(MockLlamaCppRunner, mock_exists, manag
 
     # Trigger the wrapper stored on the mock runner
     mock_runner_1.on_port_ready("model-1", 8888)
+    await asyncio.sleep(0)  # let the wrapper resolve the Future
     port1 = await asyncio.wait_for(start_task_1, timeout=1.0)
 
     assert port1 == 8888
@@ -101,6 +102,7 @@ async def test_runner_stop_and_wait_logic(MockLlamaCppRunner, mock_exists, manag
     await asyncio.sleep(0)
 
     mock_runner_2.on_port_ready("model-2", 9999)
+    await asyncio.sleep(0)  # let the wrapper resolve the Future
     port2 = await asyncio.wait_for(start_task_2, timeout=1.0)
 
     # --- Assert ---
