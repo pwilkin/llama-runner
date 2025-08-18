@@ -41,14 +41,26 @@ async def test_runner_stop_and_wait_logic(MockLlamaCppRunner, mock_exists, manag
     Tests that the manager waits for a running process to stop before starting a new one.
     This test mocks the LlamaCppRunner to focus on the manager's logic.
     """
-    # --- Setup: Mock LlamaCppRunner instances ---
+    # --- Setup: Mock LlamaCppRunner instances using asyncio.Event for proper simulation ---
+    stop_event_1 = asyncio.Event()
+    async def fake_run_1():
+        await stop_event_1.wait()
+    async def fake_stop_1():
+        stop_event_1.set()
+
     mock_runner_1 = MagicMock()
-    mock_runner_1.run = MagicMock(return_value=asyncio.sleep(0.1)) # Simulate a long running process
-    mock_runner_1.stop = MagicMock(return_value=asyncio.sleep(0)) # stop is a coroutine
+    mock_runner_1.run = MagicMock(side_effect=fake_run_1)
+    mock_runner_1.stop = MagicMock(side_effect=fake_stop_1)
+
+    stop_event_2 = asyncio.Event()
+    async def fake_run_2():
+        await stop_event_2.wait()
+    async def fake_stop_2():
+        stop_event_2.set()
 
     mock_runner_2 = MagicMock()
-    mock_runner_2.run = MagicMock(return_value=asyncio.sleep(0.1))
-    mock_runner_2.stop = MagicMock(return_value=asyncio.sleep(0)) # stop is a coroutine
+    mock_runner_2.run = MagicMock(side_effect=fake_run_2)
+    mock_runner_2.stop = MagicMock(side_effect=fake_stop_2)
 
     # Configure the mock to return different instances for model-1 and model-2
     MockLlamaCppRunner.side_effect = [mock_runner_1, mock_runner_2]

@@ -133,6 +133,22 @@ class LlamaRunnerManager:
 
     async def stop_all_llama_runners_async(self):
         logging.info("Stopping all Llama Runners asynchronously...")
-        running_tasks = list(self.runner_tasks.keys())
-        for model_name in running_tasks:
-            await self.stop_llama_runner(model_name)
+
+        # Phase 1: Signal all runners to stop.
+        # This allows their tasks to begin shutting down concurrently.
+        for runner in self.runners.values():
+            try:
+                await runner.stop()
+            except Exception as e:
+                logging.error(f"Error while stopping runner for {runner.model_name}: {e}")
+
+        # Phase 2: Cancel and gather all tasks to ensure they are cleaned up.
+        tasks = list(self.runner_tasks.values())
+        if tasks:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Phase 3: Clear internal state.
+        self.runners.clear()
+        self.runner_tasks.clear()
