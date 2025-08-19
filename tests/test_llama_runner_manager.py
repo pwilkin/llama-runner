@@ -25,7 +25,7 @@ def manager():
     manager = LlamaRunnerManager(
         models=MODELS_CONFIG,
         llama_runtimes=RUNTIMES_CONFIG,
-        default_runtime=RUNTIMES_CONFIG["default"],
+        default_runtime=RUNTIMES_CONFIG["default"]["runtime"],
         on_started=no_op,
         on_stopped=no_op,
         on_error=no_op,

@@ -17,11 +17,11 @@ class LlamaCppRunner:
         self,
         model_name: str,
         model_path: str,
-        llama_cpp_runtime: str = None,
-        on_started: Callable[[str], None] = None,
-        on_stopped: Callable[[str], None] = None,
-        on_error: Callable[[str, str, List[str]], None] = None,
-        on_port_ready: Callable[[str, int], None] = None,
+        llama_cpp_runtime: str = None, # type: ignore
+        on_started: Callable[[str], None] = None, # type: ignore
+        on_stopped: Callable[[str], None] = None, # type: ignore
+        on_error: Callable[[str, str, List[str]], None] = None, # type: ignore
+        on_port_ready: Callable[[str, int], None] = None, # type: ignore
         **kwargs,
     ):
         self.model_name = model_name
