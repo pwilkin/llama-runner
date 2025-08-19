@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import collections
+import signal
 from typing import Optional, Callable, List
 
 from llama_runner.config_loader import CONFIG_DIR, LOG_FILE
@@ -37,6 +38,7 @@ class LlamaCppRunner:
         self.alt_startup_pattern = re.compile("HTTP server listening")
         self.port = None
         self._output_buffer = collections.deque(maxlen=200) # Increased buffer size
+        self._is_stopping = False
 
     async def _read_output_continuously(self, stream):
         while True:
@@ -87,7 +89,11 @@ class LlamaCppRunner:
 
             return_code = await self.process.wait()
             logging.info(f"Process for {self.model_name} exited with code {return_code}.")
-            if return_code != 0:
+
+            # If the process was told to stop, and it exited with SIGTERM, that's not an error.
+            if self._is_stopping and return_code == -signal.SIGTERM:
+                logging.info(f"Llama.cpp server for {self.model_name} was stopped gracefully.")
+            elif return_code != 0:
                 error_msg = f"Llama.cpp server for {self.model_name} exited unexpectedly with code {return_code}."
                 logging.error(error_msg)
                 if self.on_error:
@@ -150,6 +156,8 @@ class LlamaCppRunner:
         if not self.process or self.process.returncode is not None:
             logging.info(f"stop() called for {self.model_name}, but process was not running.")
             return
+
+        self._is_stopping = True
 
         logging.info(f"Stopping {self.model_name} (PID: {self.process.pid}).")
         try:

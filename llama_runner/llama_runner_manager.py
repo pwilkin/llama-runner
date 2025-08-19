@@ -63,10 +63,8 @@ class LlamaRunnerManager:
         running_runners = {name: task for name, task in self.runner_tasks.items() if not task.done()}
         if len(running_runners) >= self.concurrent_runners_limit:
             if self.concurrent_runners_limit == 1:
-                models_to_stop = list(running_runners.keys())
-                logging.info(f"Concurrent runner limit reached. Stopping existing runner(s): {models_to_stop} before starting {model_name}.")
-                for name_to_stop in models_to_stop:
-                    await self.stop_llama_runner(name_to_stop)
+                logging.info(f"Concurrent runner limit reached. Stopping all existing runners before starting {model_name}.")
+                await self.stop_all_llama_runners_async()
             else:
                 raise RuntimeError(f"Concurrent runner limit ({self.concurrent_runners_limit}) reached.")
 
@@ -74,13 +72,17 @@ class LlamaRunnerManager:
         self._runner_startup_futures[model_name] = future
 
         def _on_port_ready_wrapper(name, port):
-            if name in self._runner_startup_futures:
-                self._runner_startup_futures[name].set_result(port)
+            fut = self._runner_startup_futures.get(name)
+            if fut and not fut.done():
+                fut.set_result(port)
+            # cleanup
+            self._runner_startup_futures.pop(name, None)
             self.on_port_ready(name, port)
 
         def _on_error_wrapper(name, message, output_buffer):
-            if name in self._runner_startup_futures and not self._runner_startup_futures[name].done():
-                self._runner_startup_futures[name].set_exception(RuntimeError(message))
+            future = self._runner_startup_futures.get(name)
+            if future and not future.done():
+                future.set_exception(RuntimeError(message))
             self.on_error(name, message, output_buffer)
 
         model_config = self.models[model_name]
@@ -132,6 +134,32 @@ class LlamaRunnerManager:
 
     async def stop_all_llama_runners_async(self):
         logging.info("Stopping all Llama Runners asynchronously...")
-        running_tasks = list(self.runner_tasks.keys())
-        for model_name in running_tasks:
-            await self.stop_llama_runner(model_name)
+
+        # Snapshot current runners and tasks (dicts may mutate)
+        runners = list(self.runners.values())
+        tasks = list(self.runner_tasks.values())
+
+        # Phase 1: ask all runners to stop (this should let run() exit)
+        for runner in runners:
+            try:
+                await runner.stop()
+            except Exception as e:
+                # Avoid accessing .model_name on mocks that might not have it
+                logging.error(f"Error while stopping runner: {e}")
+
+        # Phase 2: give tasks a chance to finish without cancelling first
+        pending = [t for t in tasks if not t.done()]
+        if pending:
+            # Short grace await; no cancellation yet
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        # Phase 3: if any still pending (rare), cancel and await again
+        still_pending = [t for t in tasks if not t.done()]
+        if still_pending:
+            for t in still_pending:
+                t.cancel()
+            await asyncio.gather(*still_pending, return_exceptions=True)
+
+        # Phase 4: clear internal state
+        self.runners.clear()
+        self.runner_tasks.clear()
