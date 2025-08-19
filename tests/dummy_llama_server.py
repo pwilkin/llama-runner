@@ -3,7 +3,6 @@ import argparse
 import signal
 import sys
 import time
-import os
 
 def handle_sigterm(signum, frame):
     """Signal handler for SIGTERM."""

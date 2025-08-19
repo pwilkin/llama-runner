@@ -13,6 +13,7 @@ from llama_runner.ollama_proxy_thread import OllamaProxyServer
 from llama_runner.model_status_widget import ModelStatusWidget
 from llama_runner.llama_runner_manager import LlamaRunnerManager
 from llama_runner.error_output_dialog import ErrorOutputDialog
+from llama_runner.log_viewer_dialog import LogViewerDialog
 
 class MainWindow(QWidget):
     runner_port_ready_for_proxy = Signal(str, int)
@@ -56,7 +57,7 @@ class MainWindow(QWidget):
                 runtimes_config=self.llama_runtimes,
                 is_model_running_callback=self.llama_runner_manager.is_llama_runner_running,
                 get_runner_port_callback=self.llama_runner_manager.get_runner_port,
-                request_runner_start_callback=self.llama_runner_manager.request_runner_start,
+                request_runner_start_callback=self.llama_runner_manager.request_runner_start, # type: ignore
                 on_runner_port_ready=self.on_runner_port_ready,
                 on_runner_stopped=self.on_runner_stopped,
             )
@@ -65,14 +66,14 @@ class MainWindow(QWidget):
             self.ollama_proxy_server = OllamaProxyServer(
                 all_models_config=self.models,
                 get_runner_port_callback=self.llama_runner_manager.get_runner_port,
-                request_runner_start_callback=self.llama_runner_manager.request_runner_start,
+                request_runner_start_callback=self.llama_runner_manager.request_runner_start, # type: ignore
             )
 
     def start_services(self):
         if self.lmstudio_proxy_server:
-            self.lmstudio_proxy_server.task = asyncio.create_task(self.lmstudio_proxy_server.start())
+            self.lmstudio_proxy_server.task = asyncio.create_task(self.lmstudio_proxy_server.start()) # type: ignore
         if self.ollama_proxy_server:
-            self.ollama_proxy_server.task = asyncio.create_task(self.ollama_proxy_server.start())
+            self.ollama_proxy_server.task = asyncio.create_task(self.ollama_proxy_server.start()) # type: ignore
 
     def _setup_ui(self):
         self.main_layout = QVBoxLayout(self)
@@ -96,6 +97,12 @@ class MainWindow(QWidget):
         self.edit_config_button = QPushButton("Edit config")
         self.main_layout.addWidget(self.edit_config_button)
         self.edit_config_button.clicked.connect(self.open_config_file)
+        
+        # Add log viewer button
+        self.log_viewer_button = QPushButton("View Logs")
+        self.main_layout.addWidget(self.log_viewer_button)
+        self.log_viewer_button.clicked.connect(self.show_log_viewer)
+        self.log_viewer_button.setEnabled(False)  # Disabled by default
 
     def closeEvent(self, event):
         print("MainWindow closing. Stopping all services...")
@@ -122,6 +129,9 @@ class MainWindow(QWidget):
     def on_model_selection_changed(self, current_item, previous_item):
         if current_item:
             self.model_status_stack.setCurrentWidget(self.model_status_widgets[current_item.text()])
+            self.currently_selected_model = current_item.text()
+            # Enable log viewer button if the model is running
+            self.update_log_viewer_button_state()
 
     def on_runner_started(self, model_name: str):
         widget = self.model_status_widgets.get(model_name)
@@ -136,6 +146,8 @@ class MainWindow(QWidget):
             widget.update_port("N/A")
             widget.set_buttons_enabled(True, False)
         self.runner_stopped_for_proxy.emit(model_name)
+        # Update log viewer button state when a runner stops
+        self.update_log_viewer_button_state()
 
     def on_runner_error(self, model_name: str, message: str, output_buffer: List[str]):
         widget = self.model_status_widgets.get(model_name)
@@ -156,6 +168,8 @@ class MainWindow(QWidget):
             widget.update_status("Running")
             widget.set_buttons_enabled(False, True)
         self.runner_port_ready_for_proxy.emit(model_name, port)
+        # Update log viewer button state when a runner starts
+        self.update_log_viewer_button_state()
 
     def open_config_file(self):
         config_path = os.path.expanduser("~/.llama-runner/config.json")
@@ -165,3 +179,36 @@ class MainWindow(QWidget):
             subprocess.run(["open", config_path])
         else:
             subprocess.run(["xdg-open", config_path])
+    
+    def get_current_runner_logs(self):
+        """Get logs from the currently selected runner."""
+        if not self.currently_selected_model:
+            return []
+        
+        # Get the runner from the manager
+        runner = self.llama_runner_manager.runners.get(self.currently_selected_model)
+        if runner:
+            return runner.get_output_buffer()
+        return []
+    
+    def update_log_viewer_button_state(self):
+        """Enable or disable the log viewer button based on runner state."""
+        if not self.currently_selected_model:
+            self.log_viewer_button.setEnabled(False)
+            return
+        
+        # Check if the runner is running
+        is_running = self.llama_runner_manager.is_llama_runner_running(self.currently_selected_model)
+        self.log_viewer_button.setEnabled(is_running)
+    
+    def show_log_viewer(self):
+        """Show the log viewer dialog for the currently selected runner."""
+        if not self.currently_selected_model:
+            return
+        
+        dialog = LogViewerDialog(
+            title=f"Logs for {self.currently_selected_model}",
+            log_provider_callback=self.get_current_runner_logs,
+            parent=self
+        )
+        dialog.exec()

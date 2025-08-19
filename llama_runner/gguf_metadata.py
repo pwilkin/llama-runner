@@ -4,6 +4,7 @@ import logging
 import traceback # Import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+from llama_runner.config_loader import CONFIG_DIR # Assuming CONFIG_DIR is defined here
 
 # Attempt to import numpy
 np = None # Initialize to None for Pylance
@@ -39,8 +40,6 @@ except Exception as e:
 logging.debug(f"GGUF_AVAILABLE status after import attempt: {GGUF_AVAILABLE}")
 # --- End debug logging ---
 
-
-from llama_runner.config_loader import CONFIG_DIR # Assuming CONFIG_DIR is defined here
 
 METADATA_CACHE_DIR = os.path.join(CONFIG_DIR, "metadata_cache")
 Path(METADATA_CACHE_DIR).mkdir(parents=True, exist_ok=True)

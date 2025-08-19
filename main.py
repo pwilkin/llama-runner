@@ -8,6 +8,7 @@ import qasync
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QIcon
+from qt_material import apply_stylesheet
 
 from llama_runner.config_loader import CONFIG_DIR, ensure_config_exists, load_config
 from llama_runner.main_window import MainWindow
@@ -69,6 +70,7 @@ def main():
 
     if not headless_mode and isinstance(app, QApplication):
         app.setWindowIcon(QIcon('app_icon.png'))
+        apply_stylesheet(app, theme='dark_red.xml')
 
     # Set up and run the event loop
     asyncio.set_event_loop_policy(qasync.DefaultQEventLoopPolicy())

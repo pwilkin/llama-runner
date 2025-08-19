@@ -8,3 +8,4 @@ fastapi # Explicitly add fastapi
 pytest
 pytest-asyncio
 pytest-qt
+qt-material
