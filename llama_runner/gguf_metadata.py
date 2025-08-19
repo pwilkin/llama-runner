@@ -78,7 +78,6 @@ def load_metadata_from_cache(model_name: str, file_size: int) -> Optional[Dict[s
         try:
             with open(cache_path, 'r') as f:
                 metadata = json.load(f)
-            logging.info(f"Loaded metadata from cache for {model_name} (size: {file_size})")
             return metadata
         except json.JSONDecodeError as e:
             logging.error(f"Error decoding JSON from cache file {cache_path}: {e}")
