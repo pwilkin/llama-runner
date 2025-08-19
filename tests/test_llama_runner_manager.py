@@ -54,8 +54,8 @@ async def test_runner_stop_and_wait_logic(MockLlamaCppRunner, mock_exists, manag
         stop_event_1.set()
 
     mock_runner_1 = MagicMock()
-    mock_runner_1.run = fake_run_1
-    mock_runner_1.stop = fake_stop_1
+    mock_runner_1.run.side_effect = fake_run_1
+    mock_runner_1.stop.side_effect = fake_stop_1
 
     stop_event_2 = asyncio.Event()
 
@@ -67,8 +67,8 @@ async def test_runner_stop_and_wait_logic(MockLlamaCppRunner, mock_exists, manag
         stop_event_2.set()
 
     mock_runner_2 = MagicMock()
-    mock_runner_2.run = fake_run_2
-    mock_runner_2.stop = fake_stop_2
+    mock_runner_2.run.side_effect = fake_run_2
+    mock_runner_2.stop.side_effect = fake_stop_2
 
     # --- Side effect factory for constructor ---
     runners = [mock_runner_1, mock_runner_2]
@@ -89,7 +89,9 @@ async def test_runner_stop_and_wait_logic(MockLlamaCppRunner, mock_exists, manag
     await asyncio.sleep(0)  # let ctor run and wrapper attach
 
     # Trigger the wrapper stored on the mock runner
-    mock_runner_1.on_port_ready("model-1", 8888)
+    # Access the attribute directly to get the wrapper function
+    on_port_ready_func = getattr(mock_runner_1, 'on_port_ready')
+    on_port_ready_func("model-1", 8888)
     await asyncio.sleep(0)  # let the wrapper resolve the Future
     port1 = await asyncio.wait_for(start_task_1, timeout=1.0)
 
@@ -99,9 +101,12 @@ async def test_runner_stop_and_wait_logic(MockLlamaCppRunner, mock_exists, manag
 
     # --- Act: Start the second runner, which should stop the first ---
     start_task_2 = asyncio.create_task(manager.request_runner_start("model-2"))
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.1)  # Give more time for constructor to run
 
-    mock_runner_2.on_port_ready("model-2", 9999)
+    # Trigger the wrapper stored on the mock runner
+    # Access the attribute directly to get the wrapper function
+    on_port_ready_func = getattr(mock_runner_2, 'on_port_ready')
+    on_port_ready_func("model-2", 9999)
     await asyncio.sleep(0)  # let the wrapper resolve the Future
     port2 = await asyncio.wait_for(start_task_2, timeout=1.0)
 
