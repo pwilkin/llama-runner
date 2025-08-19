@@ -5,3 +5,6 @@ gguf
 httpx
 qasync
 fastapi # Explicitly add fastapi
+pytest
+pytest-asyncio
+pytest-qt
