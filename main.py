@@ -72,6 +72,9 @@ def main():
     console_handler.setLevel(console_log_level)
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
+    
+    # Suppress verbose watchdog debug messages
+    logging.getLogger('watchdog').setLevel(logging.WARNING)
     app_log_file_path = os.path.join(CONFIG_DIR, "app.log")
     try:
         app_file_handler = logging.FileHandler(app_log_file_path)
@@ -106,6 +109,9 @@ def main():
 
     # Config file watcher will be set up later after creating hsm/main_window
     config_observer = None
+
+    # Suppress verbose watchdog debug messages
+    logging.getLogger('watchdog').setLevel(logging.WARNING)
 
     exit_code = 0
     try:
