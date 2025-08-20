@@ -92,6 +92,10 @@ class MainWindow(QWidget):
             self.model_status_widgets[model_name] = status_widget
             status_widget.start_button.clicked.connect(lambda checked, name=model_name: asyncio.create_task(self.llama_runner_manager.request_runner_start(name)))
             status_widget.stop_button.clicked.connect(lambda checked, name=model_name: asyncio.create_task(self.llama_runner_manager.stop_llama_runner(name)))
+            
+            # Set up log monitoring for this model
+            log_provider = lambda name=model_name: self.llama_runner_manager.get_runner_logs(name)
+            status_widget.set_log_provider(log_provider)
 
         self.model_list_widget.currentItemChanged.connect(self.on_model_selection_changed)
         self.edit_config_button = QPushButton("Edit config")
@@ -103,6 +107,14 @@ class MainWindow(QWidget):
         self.main_layout.addWidget(self.log_viewer_button)
         self.log_viewer_button.clicked.connect(self.show_log_viewer)
         self.log_viewer_button.setEnabled(False)  # Disabled by default
+        self.log_viewer_button.setObjectName("log_viewer_button")  # Set object name for styling
+        
+        # Apply stylesheet for disabled log viewer button
+        self.setStyleSheet("""
+            QPushButton#log_viewer_button:disabled {
+                 border: 1px solid #CCCCCC; /* Lighter border for disabled button */
+            }
+        """)
 
     def closeEvent(self, event):
         print("MainWindow closing. Stopping all services...")
@@ -128,16 +140,23 @@ class MainWindow(QWidget):
     @Slot(str)
     def on_model_selection_changed(self, current_item, previous_item):
         if current_item:
-            self.model_status_stack.setCurrentWidget(self.model_status_widgets[current_item.text()])
+            widget = self.model_status_widgets[current_item.text()]
+            self.model_status_stack.setCurrentWidget(widget)
             self.currently_selected_model = current_item.text()
             # Enable log viewer button if the model is running
             self.update_log_viewer_button_state()
+            # Start or stop log monitoring for the selected model based on runner state
+            if self.llama_runner_manager.is_llama_runner_running(self.currently_selected_model):
+                widget.start_log_monitoring()
+            else:
+                widget.stop_log_monitoring()
 
     def on_runner_started(self, model_name: str):
         widget = self.model_status_widgets.get(model_name)
         if widget:
             widget.update_status("Starting...")
             widget.set_buttons_enabled(False, False)
+            widget.start_log_monitoring()
 
     def on_runner_stopped(self, model_name: str):
         widget = self.model_status_widgets.get(model_name)
@@ -145,6 +164,7 @@ class MainWindow(QWidget):
             widget.update_status("Not Running")
             widget.update_port("N/A")
             widget.set_buttons_enabled(True, False)
+            widget.stop_log_monitoring()
         self.runner_stopped_for_proxy.emit(model_name)
         # Update log viewer button state when a runner stops
         self.update_log_viewer_button_state()
@@ -153,6 +173,7 @@ class MainWindow(QWidget):
         widget = self.model_status_widgets.get(model_name)
         if widget:
             widget.update_status("Error")
+            widget.stop_log_monitoring()
         dialog = ErrorOutputDialog(
             title=f"Llama Runner Error: {model_name}",
             message=f"Llama.cpp server for {model_name} encountered an error:\n{message}",
@@ -167,6 +188,7 @@ class MainWindow(QWidget):
             widget.update_port(str(port))
             widget.update_status("Running")
             widget.set_buttons_enabled(False, True)
+            widget.start_log_monitoring()
         self.runner_port_ready_for_proxy.emit(model_name, port)
         # Update log viewer button state when a runner starts
         self.update_log_viewer_button_state()

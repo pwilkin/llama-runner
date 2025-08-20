@@ -1,8 +1,8 @@
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable, List
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 def human_readable_size(size_in_bytes: Optional[int]) -> str:
     """Formats a size in bytes into a human-readable string (e.g., KB, MB, GB)."""
@@ -28,6 +28,14 @@ class ModelStatusWidget(QWidget):
         self.model_name = model_name
         self.metadata = metadata
         self.main_layout = QVBoxLayout()
+        
+        # Log monitoring
+        from llama_runner.log_parser import LlamaLogParser
+        self.log_parser = LlamaLogParser()
+        self.log_provider_callback: Optional[Callable[[], List[str]]] = None
+        self.log_monitor_timer = QTimer()
+        self.log_monitor_timer.timeout.connect(self._update_status_from_logs)
+        self.log_monitor_timer.setInterval(1000)  # Update every second
 
         # Metadata section
         self.metadata_layout = QVBoxLayout()
@@ -55,6 +63,22 @@ class ModelStatusWidget(QWidget):
 
         self.port_label = QLabel("Port: N/A")
         self.main_layout.addWidget(self.port_label)
+
+        # Real-time status display (above the buttons)
+        self.real_time_status_label = QLabel("Real-time: Idle")
+        self.real_time_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.real_time_status_label.setStyleSheet("""
+            QLabel {
+                font-weight: bold;
+                font-size: 11pt;
+                color: #2c3e50;
+                background-color: #ecf0f1;
+                padding: 8px;
+                border-radius: 4px;
+                margin: 5px 0px;
+            }
+        """)
+        self.main_layout.addWidget(self.real_time_status_label)
 
         self.start_button = QPushButton(f"Start {self.model_name}")
         self.main_layout.addWidget(self.start_button)
@@ -86,7 +110,7 @@ class ModelStatusWidget(QWidget):
             QLabel[text^="Quantization:"],
             QLabel[text^="Size:"] {
                  font-size: 9pt; /* Smaller font for metadata details */
-                 color: #555555;
+                 color: #999999; /* Lighter gray for metadata text */
                  margin-left: 10px; /* Indent metadata details */
             }
             QLabel[text^="Status:"] {
@@ -95,6 +119,9 @@ class ModelStatusWidget(QWidget):
             }
             QLabel[text^="Port:"] {
                  font-weight: bold;
+            }
+            QPushButton:disabled {
+                 border: 1px solid #CCCCCC; /* Lighter border for disabled buttons */
             }
         """)
 
@@ -153,3 +180,47 @@ class ModelStatusWidget(QWidget):
     def set_buttons_enabled(self, start_enabled: bool, stop_enabled: bool):
         self.start_button.setEnabled(start_enabled)
         self.stop_button.setEnabled(stop_enabled)
+
+    def set_log_provider(self, log_provider_callback: Callable[[], List[str]]):
+        """Set the callback function to get logs from the runner."""
+        self.log_provider_callback = log_provider_callback
+
+    def start_log_monitoring(self):
+        """Start monitoring logs for status updates."""
+        if self.log_provider_callback:
+            self.log_monitor_timer.start()
+
+    def stop_log_monitoring(self):
+        """Stop monitoring logs."""
+        self.log_monitor_timer.stop()
+
+    def _update_status_from_logs(self):
+        """Update status based on the latest logs."""
+        if not self.log_provider_callback:
+            return
+
+        logs = self.log_provider_callback()
+        if not logs:
+            # No logs available — show idle but keep monitoring running
+            self.real_time_status_label.setText("Real-time: Idle")
+            return
+
+        from llama_runner.log_parser import LlamaLogParser
+        parser = LlamaLogParser()
+        status_info = parser.parse_multiple_lines(logs)
+
+        status_text = parser.format_status_text(status_info)
+        self.update_status(status_text)
+
+        # Update the real-time status label
+        self.real_time_status_label.setText(f"Real-time: {status_text}")
+
+        # Start monitoring when work starts; do NOT stop monitoring just because status is 'Idle' or 'Completed'
+        # Stopping should only happen on explicit runner stop/error.
+        if any(k in status_text for k in ("Starting", "Processing", "Generating")):
+            if not self.log_monitor_timer.isActive():
+                self.start_log_monitoring()
+        # Only stop monitoring on explicit "Not Running" or "Error" signals
+        elif any(k in status_text for k in ("Not Running", "Error")):
+            if self.log_monitor_timer.isActive():
+                self.stop_log_monitoring()

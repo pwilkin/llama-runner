@@ -70,7 +70,7 @@ def main():
 
     if not headless_mode and isinstance(app, QApplication):
         app.setWindowIcon(QIcon('app_icon.png'))
-        apply_stylesheet(app, theme='dark_red.xml')
+        apply_stylesheet(app, theme='dark_red.xml', invert_secondary=False)
 
     # Set up and run the event loop
     asyncio.set_event_loop_policy(qasync.DefaultQEventLoopPolicy())

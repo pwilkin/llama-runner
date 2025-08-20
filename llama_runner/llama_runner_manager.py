@@ -44,6 +44,22 @@ class LlamaRunnerManager:
                 return runner.get_port()
         return None
 
+    def get_runner_logs(self, model_name: str) -> List[str]:
+        """Get the latest logs from a specific runner.
+
+        Return the runner's output buffer if the runner object exists.
+        Previously this required the runner to be 'running' which caused
+        the ModelStatusWidget to miss logs that were already present on the
+        runner object (e.g. when monitoring started slightly before the
+        runner_tasks entry was created). Returning logs whenever the runner
+        object exists avoids that race and keeps the UI in sync with the
+        Log Viewer.
+        """
+        runner = self.runners.get(model_name)
+        if runner:
+            return runner.get_output_buffer()
+        return []
+
     async def request_runner_start(self, model_name: str) -> int:
         logging.info(f"Received request to start runner for model: {model_name}")
         
