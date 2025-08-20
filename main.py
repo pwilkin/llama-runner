@@ -9,10 +9,38 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QIcon
 from qt_material import apply_stylesheet
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 from llama_runner.config_loader import CONFIG_DIR, ensure_config_exists, load_config
 from llama_runner.main_window import MainWindow
 from llama_runner.headless_service_manager import HeadlessServiceManager
+
+class ConfigFileHandler(FileSystemEventHandler):
+    """
+    Handles changes to the configuration file.
+    """
+    def __init__(self, headless_mode, hsm=None, main_window=None):
+        self.headless_mode = headless_mode
+        self.hsm = hsm
+        self.main_window = main_window
+
+    def on_modified(self, event):
+        if not event.is_directory and event.src_path.endswith('config.json'): # type: ignore
+            logging.info(f"Configuration file changed: {event.src_path}")
+            new_config = load_config()
+            update_system_state_with_new_config(new_config, self.headless_mode, self.hsm, self.main_window)
+
+def update_system_state_with_new_config(new_config, headless_mode, hsm=None, main_window=None):
+    """
+    Updates the system state with the new configuration.
+    """
+    logging.info("Updating system state with new configuration.")
+
+    if headless_mode and hsm:
+        hsm.update_config(new_config)
+    elif main_window:
+        main_window.update_config(new_config)
 
 def main():
     parser = argparse.ArgumentParser(description="Llama Runner application.")
@@ -76,10 +104,19 @@ def main():
     asyncio.set_event_loop_policy(qasync.DefaultQEventLoopPolicy())
     loop = asyncio.get_event_loop()
 
+    # Config file watcher will be set up later after creating hsm/main_window
+    config_observer = None
+
     exit_code = 0
     try:
         if headless_mode:
             hsm = HeadlessServiceManager(loaded_config, loaded_config.get("models", {}))
+
+            # Set up config file watcher for headless mode
+            config_handler = ConfigFileHandler(headless_mode, hsm, None)
+            config_observer = Observer()
+            config_observer.schedule(config_handler, path=CONFIG_DIR, recursive=False)
+            config_observer.start()
 
             async def shutdown_handler():
                 logging.info("SIGINT received, shutting down services...")
@@ -91,6 +128,12 @@ def main():
             loop.run_forever()
         else:
             main_window = MainWindow()
+
+            # Set up config file watcher for GUI mode
+            config_handler = ConfigFileHandler(headless_mode, None, main_window)
+            config_observer = Observer()
+            config_observer.schedule(config_handler, path=CONFIG_DIR, recursive=False)
+            config_observer.start()
 
             async def shutdown_handler():
                 logging.info("Shutdown requested, stopping services...")
@@ -110,6 +153,9 @@ def main():
     finally:
         logging.info("Closing asyncio event loop.")
         loop.close()
+        if config_observer:
+            config_observer.stop()
+            config_observer.join()
         logging.info(f"Application exited with code {exit_code}.")
         sys.exit(exit_code)
 

@@ -9,3 +9,4 @@ pytest
 pytest-asyncio
 pytest-qt
 qt-material
+watchdog

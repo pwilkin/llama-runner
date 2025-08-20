@@ -223,11 +223,72 @@ class MainWindow(QWidget):
         is_running = self.llama_runner_manager.is_llama_runner_running(self.currently_selected_model)
         self.log_viewer_button.setEnabled(is_running)
     
+    def _create_future_wrapper(self, coro_func):
+        """
+        Wraps a coroutine function to return a Future.
+        """
+        import asyncio
+        def wrapper(*args, **kwargs):
+            loop = asyncio.get_event_loop()
+            return asyncio.ensure_future(coro_func(*args, **kwargs))
+        return wrapper
+
+    def update_config(self, new_config):
+        """
+        Updates the configuration and reinitializes services as needed.
+        """
+        self.config = new_config
+        self.llama_runtimes = self.config.get("llama-runtimes", {})
+        self.default_runtime = self.config.get("default_runtime", "llama-server")
+        self.models = self.config.get("models", {})
+        self.concurrent_runners_limit = self.config.get("concurrentRunners", 1)
+
+        proxies_config = self.config.get('proxies', {})
+        self.ollama_proxy_enabled = proxies_config.get('ollama', {}).get('enabled', True)
+        self.lmstudio_proxy_enabled = proxies_config.get('lmstudio', {}).get('enabled', True)
+
+        # Reinitialize the LlamaRunnerManager with the new configuration
+        self.llama_runner_manager = LlamaRunnerManager(
+            models=self.models,
+            llama_runtimes=self.llama_runtimes,
+            default_runtime=self.default_runtime,
+            on_started=self.on_runner_started,
+            on_stopped=self.on_runner_stopped,
+            on_error=self.on_runner_error,
+            on_port_ready=self.on_runner_port_ready,
+        )
+        self.llama_runner_manager.set_concurrent_runners_limit(self.concurrent_runners_limit)
+
+        # Reinitialize proxies if enabled
+        if self.ollama_proxy_enabled and not self.ollama_proxy_server:
+            self.ollama_proxy_server = OllamaProxyServer(
+                all_models_config=self.models,
+                get_runner_port_callback=self.llama_runner_manager.get_runner_port,
+                request_runner_start_callback=self._create_future_wrapper(self.llama_runner_manager.request_runner_start),
+            )
+        elif not self.ollama_proxy_enabled and self.ollama_proxy_server:
+            self.ollama_proxy_server.stop()
+            self.ollama_proxy_server = None
+
+        if self.lmstudio_proxy_enabled and not self.lmstudio_proxy_server:
+            self.lmstudio_proxy_server = LMStudioProxyServer(
+                all_models_config=self.models,
+                runtimes_config=self.llama_runtimes,
+                is_model_running_callback=self.llama_runner_manager.is_llama_runner_running,
+                get_runner_port_callback=self.llama_runner_manager.get_runner_port,
+                request_runner_start_callback=self._create_future_wrapper(self.llama_runner_manager.request_runner_start),
+                on_runner_port_ready=self.on_runner_port_ready,
+                on_runner_stopped=self.on_runner_stopped,
+            )
+        elif not self.lmstudio_proxy_enabled and self.lmstudio_proxy_server:
+            self.lmstudio_proxy_server.stop()
+            self.lmstudio_proxy_server = None
+
     def show_log_viewer(self):
         """Show the log viewer dialog for the currently selected runner."""
         if not self.currently_selected_model:
             return
-        
+
         dialog = LogViewerDialog(
             title=f"Logs for {self.currently_selected_model}",
             log_provider_callback=self.get_current_runner_logs,

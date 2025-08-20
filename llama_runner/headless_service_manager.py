@@ -114,13 +114,21 @@ class HeadlessServiceManager:
                 logger.error(f"Error monitoring logs for {model_name}: {e}")
                 break
 
+    def update_config(self, new_config):
+        """
+        Updates the configuration and reinitializes services as needed.
+        """
+        logger.info("Updating configuration in HeadlessServiceManager.")
+        self.app_config = new_config
+        self._initialize_services()
+
     async def stop_services(self):
         logger.info("Stopping headless services...")
 
         # Cancel all log monitoring tasks
         for task in self.log_monitors.values():
             task.cancel()
-        
+
         tasks_to_cancel = []
         if self.ollama_proxy and self.ollama_proxy.task:
             tasks_to_cancel.append(self.ollama_proxy.task)

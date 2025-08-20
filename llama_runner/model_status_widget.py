@@ -201,26 +201,28 @@ class ModelStatusWidget(QWidget):
 
         logs = self.log_provider_callback()
         if not logs:
-            # No logs available — show idle but keep monitoring running
-            self.real_time_status_label.setText("Real-time: Idle")
-            return
+            return  # Keep current status when no new logs
 
-        from llama_runner.log_parser import LlamaLogParser
+        from llama_runner.log_parser import LlamaLogParser, ModelStatus
         parser = LlamaLogParser()
         status_info = parser.parse_multiple_lines(logs)
 
+        # Format status text for display
         status_text = parser.format_status_text(status_info)
+
+        # Update main status - always update to show current state
         self.update_status(status_text)
 
-        # Update the real-time status label
-        self.real_time_status_label.setText(f"Real-time: {status_text}")
+        # Update real-time status - for IDLE, show a more user-friendly message
+        if status_info.status == ModelStatus.IDLE:
+            self.real_time_status_label.setText("Real-time: Waiting for requests...")
+        else:
+            self.real_time_status_label.setText(f"Real-time: {status_text}")
 
-        # Start monitoring when work starts; do NOT stop monitoring just because status is 'Idle' or 'Completed'
-        # Stopping should only happen on explicit runner stop/error.
+        # Start/stop monitoring logic
         if any(k in status_text for k in ("Starting", "Processing", "Generating")):
             if not self.log_monitor_timer.isActive():
                 self.start_log_monitoring()
-        # Only stop monitoring on explicit "Not Running" or "Error" signals
         elif any(k in status_text for k in ("Not Running", "Error")):
             if self.log_monitor_timer.isActive():
                 self.stop_log_monitoring()
