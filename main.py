@@ -105,7 +105,11 @@ def main():
 
     # Set up and run the event loop
     asyncio.set_event_loop_policy(qasync.DefaultQEventLoopPolicy())
-    loop = asyncio.get_event_loop()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
     # Config file watcher will be set up later after creating hsm/main_window
     config_observer = None
@@ -123,6 +127,9 @@ def main():
             config_observer = Observer()
             config_observer.schedule(config_handler, path=CONFIG_DIR, recursive=False)
             config_observer.start()
+
+            # Start proxy services
+            loop.call_soon(hsm.start_services)
 
             async def shutdown_handler():
                 logging.info("SIGINT received, shutting down services...")

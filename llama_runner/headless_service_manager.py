@@ -88,6 +88,15 @@ class HeadlessServiceManager:
                 on_runner_stopped=lambda name: None,
             )
 
+    def start_services(self):
+        """Start all configured proxy services."""
+        logger.info("Starting proxy services...")
+        if self.lmstudio_proxy:
+            self.lmstudio_proxy.task = asyncio.create_task(self.lmstudio_proxy.start())
+        if self.ollama_proxy:
+            self.ollama_proxy.task = asyncio.create_task(self.ollama_proxy.start())
+        logger.info("Proxy services started.")
+
     async def _monitor_model_logs(self, model_name: str):
         """Monitor logs for a specific model and output status to stdout."""
         while True:
